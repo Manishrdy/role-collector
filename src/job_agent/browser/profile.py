@@ -11,17 +11,34 @@ land in Phase 2 once the search modules are wired.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from job_agent.config import AppConfig, load_config
 
 if TYPE_CHECKING:
-    from playwright.async_api import BrowserContext
+    from playwright.async_api import BrowserContext as AsyncBrowserContext
+    from playwright.sync_api import BrowserContext as SyncBrowserContext
 
 log = logging.getLogger(__name__)
+
+
+_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/130.0.0.0 Safari/537.36"
+)
+
+
+def _launch_args(cfg: AppConfig) -> dict[str, Any]:
+    return {
+        "headless": cfg.browser.headless,
+        "accept_downloads": False,
+        "viewport": {"width": 1280, "height": 900},
+        "user_agent": _USER_AGENT,
+    }
 
 
 def profile_path(cfg: AppConfig | None = None) -> Path:
@@ -32,32 +49,44 @@ def profile_path(cfg: AppConfig | None = None) -> Path:
 
 
 @asynccontextmanager
-async def launch_context(cfg: AppConfig | None = None) -> AsyncIterator[BrowserContext]:
-    """Launch a persistent Chromium context with the dedicated profile.
-
-    Downloads are blocked unconditionally — design_plan.md §14.8.
-    """
+async def launch_context(cfg: AppConfig | None = None) -> AsyncIterator[AsyncBrowserContext]:
+    """Async persistent Chromium context. Downloads are blocked unconditionally."""
     cfg = cfg or load_config()
     from playwright.async_api import async_playwright
 
     user_data_dir = profile_path(cfg)
     log.info("launching browser profile at %s (headless=%s)", user_data_dir, cfg.browser.headless)
 
-    launch_args: dict[str, Any] = {
-        "headless": cfg.browser.headless,
-        "accept_downloads": False,
-        "viewport": {"width": 1280, "height": 900},
-        # Identify as a recent stable Chromium build; do not spoof a different OS.
-        "user_agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/130.0.0.0 Safari/537.36"
-        ),
-    }
-
     async with async_playwright() as p:
-        context = await p.chromium.launch_persistent_context(str(user_data_dir), **launch_args)
+        context = await p.chromium.launch_persistent_context(
+            str(user_data_dir), **_launch_args(cfg)
+        )
         try:
             yield context
         finally:
             await context.close()
+
+
+@contextmanager
+def launch_sync_context(cfg: AppConfig | None = None) -> Iterator[SyncBrowserContext]:
+    """Sync persistent Chromium context — used by the Phase-2 search drivers.
+
+    Cannot run inside a thread that already has a running asyncio loop
+    (Playwright sync API restriction). Our CLI is plain sync, so this is fine.
+    """
+    cfg = cfg or load_config()
+    from playwright.sync_api import sync_playwright
+
+    user_data_dir = profile_path(cfg)
+    log.info(
+        "launching sync browser profile at %s (headless=%s)",
+        user_data_dir,
+        cfg.browser.headless,
+    )
+
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(str(user_data_dir), **_launch_args(cfg))
+        try:
+            yield context
+        finally:
+            context.close()

@@ -1,18 +1,22 @@
 """LangGraph node implementations.
 
-Phase-1: most nodes are pass-through stubs that log + record an agent_event.
-The skeleton runs end-to-end so the next phase can replace nodes one at a
-time without touching the wiring.
+Phase-1: pass-through stubs.
+Phase-2: the ATS Google search node now actually drives the browser.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
+from job_agent.browser.profile import launch_sync_context
 from job_agent.config import load_config
 from job_agent.db import repo
 from job_agent.graph.state import AgentState
+from job_agent.sources import queries as q_mod
+from job_agent.sources.ats_search import run_ats_search
 
 log = logging.getLogger(__name__)
 
@@ -49,13 +53,79 @@ def create_search_run_node(state: AgentState) -> AgentState:
 
 
 def generate_search_plan_node(state: AgentState) -> AgentState:
-    """STUB — Phase 2 builds real query templates from cfg.search and cfg.sources."""
-    _event(state, "plan_generated", "[stub] no queries generated yet")
+    """Build the deterministic search plan (currently ATS Google queries only)."""
+    cfg = load_config()
+    runtime = state.get("runtime", {}) or {}
+    max_queries: int | None = runtime.get("max_queries_override")
+    plans = q_mod.generate_ats_queries(cfg, max_queries=max_queries)
+    state["search_plan"] = [
+        {
+            "query": p.query,
+            "time_window": p.time_window,
+            "source_type": p.source_type,
+            "target_domain": p.target_domain,
+            "ats_type": p.ats_type,
+            "role": p.role,
+            "location": p.location,
+        }
+        for p in plans
+    ]
+    _event(state, "plan_generated", f"{len(plans)} ATS queries planned")
     return state
 
 
 def run_ats_google_search_node(state: AgentState) -> AgentState:
-    _event(state, "ats_google_search", "[stub] no candidate URLs collected yet")
+    cfg = load_config()
+    runtime = state.get("runtime", {}) or {}
+
+    if runtime.get("dry_run"):
+        _event(state, "ats_google_search", "dry_run: skipping browser")
+        return state
+    if not cfg.sources.ats_google_search.enabled:
+        _event(state, "ats_google_search", "disabled in config")
+        return state
+
+    plans = q_mod.generate_ats_queries(cfg, max_queries=runtime.get("max_queries_override"))
+    if not plans:
+        _event(state, "ats_google_search", "no queries to run")
+        return state
+
+    max_results = runtime.get("max_results_override") or cfg.search.max_results_per_query
+    run_id = state.get("run_id")
+
+    debug_dir: Path | None = None
+    if runtime.get("debug_dump"):
+        debug_dir = Path("data/debug") / f"run-{run_id or 'unknown'}"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+
+    _event(
+        state,
+        "ats_google_search",
+        f"running {len(plans)} queries with max_results={max_results}"
+        + (f" (debug dump -> {debug_dir})" if debug_dir else ""),
+    )
+
+    with launch_sync_context(cfg) as ctx:
+        candidates, stats = run_ats_search(
+            context=ctx,
+            cfg=cfg,
+            plans=plans,
+            max_results_per_query=max_results,
+            search_run_id=run_id,
+            debug_dump_dir=debug_dir,
+        )
+
+    state["candidate_urls"] = [asdict(c) for c in candidates]
+    _event(
+        state,
+        "ats_google_search_done",
+        (
+            f"{len(candidates)} unique URLs / "
+            f"{stats.queries_succeeded} ok / "
+            f"{stats.queries_blocked} blocked / "
+            f"google_blocked_at={stats.google_blocked_at}"
+        ),
+    )
     return state
 
 

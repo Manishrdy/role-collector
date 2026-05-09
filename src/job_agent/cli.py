@@ -77,7 +77,28 @@ def doctor() -> None:
 
 
 @app.command()
-def run() -> None:
+def run(
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Generate the search plan and skip the browser. Useful for previewing queries.",
+    ),
+    max_queries: int | None = typer.Option(
+        None,
+        "--max-queries",
+        help="Override cfg.search.max_queries_per_run for this run only.",
+    ),
+    max_results: int | None = typer.Option(
+        None,
+        "--max-results",
+        help="Override cfg.search.max_results_per_query for this run only.",
+    ),
+    debug_dump: bool = typer.Option(
+        False,
+        "--debug-dump",
+        help="Save raw HTML/screenshot of every search to data/debug/run-<id>/.",
+    ),
+) -> None:
     """Execute the LangGraph workflow end-to-end."""
     _configure_logging()
     cfg = load_config()
@@ -90,13 +111,32 @@ def run() -> None:
     tracer = get_tracer(cfg)
     trace = tracer.trace(
         name="job_sourcing_run",
-        metadata={"mode": cfg.agent.mode, "model": cfg.llm.model},
-        tags=["env:dev", f"model:{cfg.llm.model}"],
+        metadata={
+            "mode": cfg.agent.mode,
+            "model": cfg.llm.model,
+            "dry_run": dry_run,
+            "max_queries_override": max_queries,
+            "max_results_override": max_results,
+        },
+        tags=["env:dev", f"model:{cfg.llm.model}"] + (["dry_run"] if dry_run else []),
     )
     console.print(f"[cyan]langfuse trace[/cyan] enabled={tracer.enabled} trace_id={trace.trace_id}")
+    if dry_run:
+        console.print("[yellow]--dry-run: browser will NOT be launched[/yellow]")
+    if max_queries is not None or max_results is not None:
+        console.print(
+            f"[yellow]overrides:[/yellow] max_queries={max_queries} max_results={max_results}"
+        )
 
     workflow = compile_app()
-    initial: AgentState = {}
+    initial: AgentState = {
+        "runtime": {
+            "dry_run": dry_run,
+            "max_queries_override": max_queries,
+            "max_results_override": max_results,
+            "debug_dump": debug_dump,
+        }
+    }
     final: AgentState = {}
     try:
         final = workflow.invoke(initial)
@@ -115,6 +155,35 @@ def run() -> None:
     for key, val in sorted(summary.items()):
         table.add_row(key, str(val))
     console.print(table)
+
+    plan = final.get("search_plan", [])
+    if plan:
+        console.print(f"[cyan]search plan:[/cyan] {len(plan)} queries")
+        if dry_run:
+            preview = Table(title="planned queries (first 10)", show_header=True)
+            preview.add_column("#", justify="right")
+            preview.add_column("engine target")
+            preview.add_column("time")
+            preview.add_column("query")
+            for i, p in enumerate(plan[:10], 1):
+                preview.add_row(str(i), p["target_domain"], p["time_window"], p["query"])
+            console.print(preview)
+
+    candidates = final.get("candidate_urls", [])
+    if candidates:
+        console.print(f"[cyan]candidate urls:[/cyan] {len(candidates)} unique")
+        cand_table = Table(title="candidate URLs (first 10)", show_header=True)
+        cand_table.add_column("engine")
+        cand_table.add_column("ats")
+        cand_table.add_column("rank", justify="right")
+        cand_table.add_column("title", overflow="fold")
+        cand_table.add_column("url", overflow="fold")
+        for c in candidates[:10]:
+            cand_table.add_row(
+                c["engine"], c["ats_type"], str(c["rank"]), c["title"][:80], c["url"]
+            )
+        console.print(cand_table)
+
     console.print(f"[green]run finished[/green] (run_id={final.get('run_id')})")
 
 

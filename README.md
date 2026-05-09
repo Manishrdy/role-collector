@@ -4,20 +4,24 @@ Local-first single-agent job sourcing system. Finds fresh, hidden software-engin
 
 Full design: [`design_plan.md`](design_plan.md).
 
-## Status — Phase 1 (skeleton)
+## Status — Phase 2 (ATS search plumbing)
 
-The workflow runs end-to-end with stub source modules. No jobs land in SQLite yet — that starts in Phase 2 (Google ATS search).
+Phase 2 plumbing is complete: query generator, Playwright Google + Bing drivers with URL-param time filters and captcha detection, sticky-engine fallback orchestrator, runtime overrides (`--dry-run`, `--max-queries`, `--max-results`, `--debug-dump`), and tests for every deterministic piece. **Live engines are blocking us** — Google captchas after one query, Bing serves a stripped page with no organic results. Next move: pivot primary search to Google Programmable Search Engine (CSE) JSON API + stealth-Playwright fallback.
 
 What works now:
 
 - Config loader (`config.yaml` + `.env`)
 - SQLite schema & migrator (all 9 tables, indexes from the design doc)
-- Langfuse tracing wrapper with PII redaction
+- Langfuse v4 tracing wrapper with PII redaction
 - URL safety layer (allowlist, login/apply blocks, shortener block, canonicalisation)
-- Dedicated Chromium profile launcher
-- LangGraph workflow with 13 stub nodes
+- Dedicated Chromium profile (sync + async launchers)
+- ATS query generator (deterministic, cartesian over role × ATS domain × time-window × location)
+- Search engine drivers (Google + Bing) with URL-param time filters and block detection
+- ATS search orchestrator with sticky-engine fallback and per-query rate limiting
+- LangGraph workflow with 13 nodes (ats_google_search now real, others still stubs)
 - Streamlit review dashboard (placeholder)
 - `make` targets for setup/run/test/lint
+- 57 passing tests
 
 ## Setup
 
@@ -73,7 +77,7 @@ config.yaml             # user-editable
 
 ## What's next
 
-Phase 2 — real Google ATS search via Playwright (Bing fallback when Google blocks). The stubs in `tools/search.py` and the `run_ats_google_search_node` are the integration points.
+Phase 2 follow-up — pivot primary search to Google CSE (Programmable Search Engine, free 100/day) since Google and Bing both block our Playwright-driven search pages. CSE returns structured JSON, no captcha. Stealth Playwright stays as a fallback when the CSE quota exhausts.
 
 ## Guardrails
 
