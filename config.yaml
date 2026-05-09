@@ -1,0 +1,113 @@
+# Job Sourcing Agent — user-editable config.
+# See design_plan.md §24 for field reference.
+
+agent:
+  name: local_job_sourcing_agent
+  mode: mvp
+  dry_run: false
+
+llm:
+  provider: ollama
+  model: qwen3:8b
+  temperature: 0.0
+  max_context_chars_per_page: 12000
+
+search:
+  # Time windows the agent will iterate through per run.
+  time_windows:
+    - past_24h
+    - past_48h
+  # EDIT ME: roles you want to search for.
+  roles:
+    - software engineer
+    - backend engineer
+    - full stack engineer
+    - founding engineer
+  # EDIT ME: locations you want to target.
+  locations:
+    - remote
+    - United States
+    - San Francisco
+    - New York
+    - Los Angeles
+    - San Diego
+  max_queries_per_run: 20
+  max_results_per_query: 10
+
+sources:
+  ats_google_search:
+    enabled: true
+    domains:
+      - jobs.ashbyhq.com
+      - jobs.lever.co
+      - job-boards.greenhouse.io
+      - boards.greenhouse.io
+      - myworkdayjobs.com
+      - wd1.myworkdaysite.com
+      - wd5.myworkdaysite.com
+      - jobs.smartrecruiters.com
+  funding_discovery:
+    enabled: false  # turned on after Phase 5
+  linkedin_public_search:
+    enabled: false  # turned on after Phase 6
+    login_allowed: false
+
+browser:
+  headless: false
+  dedicated_profile_path: ./browser_profiles/job_agent
+  downloads_allowed: false
+  min_delay_seconds: 5
+  max_delay_seconds: 20
+  search_engine_order:
+    - google
+    - bing
+
+limits:
+  max_pages_per_domain_per_run: 5
+  max_total_pages_per_run: 100
+  stop_on_captcha: true
+  stop_on_login_page: true
+  min_delay_between_searches_seconds: 20
+  max_delay_between_searches_seconds: 60
+
+dedupe:
+  duplicate_threshold: 0.92
+  possible_duplicate_threshold: 0.80
+  weights:
+    company: 0.30
+    title: 0.25
+    description: 0.30
+    location: 0.10
+    skills: 0.05
+
+storage:
+  sqlite_path: ./data/jobs.db
+
+tracing:
+  langfuse_enabled: true
+  redact_pii: true
+  log_raw_page_text: false
+  log_resume_text: false
+
+# Domain allowlist for the URL safety layer. Verified company domains
+# (resolved at runtime by the career-page resolver) get added dynamically.
+allowlist_domains:
+  - google.com
+  - www.google.com
+  - bing.com
+  - www.bing.com
+  - jobs.ashbyhq.com
+  - jobs.lever.co
+  - job-boards.greenhouse.io
+  - boards.greenhouse.io
+  - myworkdayjobs.com
+  - wd1.myworkdaysite.com
+  - wd5.myworkdaysite.com
+  - jobs.smartrecruiters.com
+  - ycombinator.com
+  - www.ycombinator.com
+  - wellfound.com
+  - linkedin.com
+  - www.linkedin.com
+  - techcrunch.com
+  - www.techcrunch.com
