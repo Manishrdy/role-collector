@@ -2,6 +2,8 @@
 
 Phase-1: pass-through stubs.
 Phase-2: the ATS Google search node now actually drives the browser.
+Phase-3: fetch / extract / save are real implementations driving Playwright,
+the deterministic parser chain, and the Ollama LLM fallback.
 """
 
 from __future__ import annotations
@@ -11,8 +13,13 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from job_agent.browser.page_fetch import FetchedPage, fetch_pages
+from job_agent.browser.safety import normalize_candidate_url
 from job_agent.config import load_config
 from job_agent.db import repo
+from job_agent.extract.llm import OllamaExtractor
+from job_agent.extract.pipeline import extract_job
+from job_agent.extract.schema import ExtractedJob
 from job_agent.graph.state import AgentState
 from job_agent.sources import queries as q_mod
 from job_agent.sources.ats_search import run_ats_search
@@ -144,18 +151,166 @@ def run_linkedin_public_search_node(state: AgentState) -> AgentState:
     return state
 
 
+def _fetched_to_state(p: FetchedPage) -> dict[str, Any]:
+    """Project a FetchedPage into the JSON-friendly shape we keep in AgentState."""
+    return {
+        "url": p.url,
+        "canonical_url": p.canonical_url,
+        "final_url": p.final_url,
+        "domain": p.domain,
+        "page_title": p.page_title,
+        "http_status": p.http_status,
+        "html": p.html,
+        "content_hash": p.content_hash,
+        "fetched_at": p.fetched_at,
+        "status": p.status,
+        "error": p.error,
+        "blocked_reason": p.blocked_reason,
+    }
+
+
 def fetch_candidate_pages_node(state: AgentState) -> AgentState:
+    cfg = load_config()
+    runtime = state.get("runtime", {}) or {}
+    candidates = state.get("candidate_urls", []) or []
+
+    if not candidates:
+        _event(state, "fetch_pages", "no candidate URLs to fetch")
+        state["fetched_pages"] = []
+        return state
+
+    if runtime.get("dry_run"):
+        _event(state, "fetch_pages", f"dry_run: skipping {len(candidates)} fetches")
+        state["fetched_pages"] = []
+        return state
+
+    # Some Phase-2 candidates land on ATS apply-flow URLs
+    # (e.g. /<co>/<uuid>/application?utm_*=...) which the safety layer
+    # would reject. Rewrite them to the canonical detail URL first, then
+    # collapse any duplicates that result from the normalization.
+    normalized_count = 0
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for c in candidates:
+        normalized = normalize_candidate_url(c["url"])
+        if normalized != c["url"]:
+            normalized_count += 1
+            c["url"] = normalized
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(c)
+    if len(deduped) != len(candidates):
+        _event(
+            state,
+            "fetch_pages",
+            f"collapsed {len(candidates) - len(deduped)} duplicate(s) after URL normalization",
+        )
+    state["candidate_urls"] = deduped
+    candidates = deduped
+
+    urls = [c["url"] for c in candidates]
     _event(
         state,
         "fetch_pages",
-        f"[stub] fetched 0 of {len(state.get('candidate_urls', []))} candidates",
+        f"fetching {len(urls)} candidates ({normalized_count} normalized)",
+    )
+
+    pages = fetch_pages(urls, cfg=cfg, concurrency=4)
+    run_id = state.get("run_id")
+    ok = blocked = errored = 0
+    for p in pages:
+        if p.status == "ok":
+            ok += 1
+        elif p.status == "blocked":
+            blocked += 1
+        else:
+            errored += 1
+        repo.record_page_fetch(
+            url=p.url,
+            canonical_url=p.canonical_url,
+            domain=p.domain,
+            status=p.status,
+            http_status=p.http_status,
+            content_hash=p.content_hash,
+            detected_page_type="job_detail",
+            blocked_reason=p.blocked_reason or p.error,
+            search_run_id=run_id,
+        )
+
+    state["fetched_pages"] = [_fetched_to_state(p) for p in pages]
+    _event(
+        state,
+        "fetch_pages_done",
+        f"{ok} ok / {blocked} blocked / {errored} errored",
     )
     return state
 
 
+def _build_llm_extractor(cfg: Any) -> OllamaExtractor | None:
+    """Create an OllamaExtractor unless the LLM provider is disabled."""
+    if cfg.llm.provider != "ollama":
+        return None
+    return OllamaExtractor(cfg)
+
+
 def extract_job_data_node(state: AgentState) -> AgentState:
+    cfg = load_config()
+    pages = state.get("fetched_pages", []) or []
+    candidates_by_url = {c["url"]: c for c in (state.get("candidate_urls", []) or [])}
+
+    if not pages:
+        _event(state, "extract_jobs", "no fetched pages to extract")
+        state["extracted_jobs"] = []
+        return state
+
+    threshold = cfg.llm.low_confidence_threshold
+    extracted: list[dict[str, Any]] = []
+    counts = {"ats_parser": 0, "jsonld": 0, "dom": 0, "llm": 0, "missed": 0}
+
+    llm = _build_llm_extractor(cfg)
+    try:
+        for page in pages:
+            if page["status"] != "ok" or not page.get("html"):
+                counts["missed"] += 1
+                continue
+            try:
+                job: ExtractedJob | None = extract_job(
+                    html=page["html"], url=page["url"], llm=llm
+                )
+            except Exception as e:
+                log.warning("extract crashed for %s: %s", page["url"], e)
+                counts["missed"] += 1
+                continue
+            if job is None:
+                counts["missed"] += 1
+                continue
+            counts[job.extraction_source] = counts.get(job.extraction_source, 0) + 1
+            cand = candidates_by_url.get(page["url"], {})
+            extracted.append(
+                {
+                    "url": page["url"],
+                    "canonical_url": page["canonical_url"],
+                    "domain": page["domain"],
+                    "source_type": cand.get("source_type", "ats_google_search"),
+                    "source_query": cand.get("source_query"),
+                    "needs_review": job.extraction_confidence < threshold,
+                    "job": job.model_dump(),
+                }
+            )
+    finally:
+        if llm is not None:
+            llm.close()
+
+    state["extracted_jobs"] = extracted
     _event(
-        state, "extract_jobs", f"[stub] extracted 0 of {len(state.get('fetched_pages', []))} pages"
+        state,
+        "extract_jobs_done",
+        (
+            f"{len(extracted)} extracted "
+            f"(ats={counts['ats_parser']} jsonld={counts['jsonld']} "
+            f"dom={counts['dom']} llm={counts['llm']} missed={counts['missed']})"
+        ),
     )
     return state
 
@@ -171,7 +326,48 @@ def semantic_duplicate_check_node(state: AgentState) -> AgentState:
 
 
 def save_jobs_node(state: AgentState) -> AgentState:
-    _event(state, "save_jobs", f"[stub] saved 0 of {len(state.get('extracted_jobs', []))}")
+    extracted = state.get("extracted_jobs", []) or []
+    if not extracted:
+        _event(state, "save_jobs", "no extracted jobs to save")
+        state["saved_jobs"] = []
+        return state
+
+    run_id = state.get("run_id")
+    saved_ids: list[int] = []
+    inserted = updated = needs_review = 0
+    for record in extracted:
+        try:
+            job = ExtractedJob.model_validate(record["job"])
+        except Exception as e:
+            log.warning("invalid extracted job for %s: %s", record.get("url"), e)
+            continue
+        try:
+            result = repo.upsert_job(
+                extracted=job,
+                canonical_url=record["canonical_url"],
+                raw_url=record["url"],
+                source_type=record["source_type"],
+                source_query=record.get("source_query"),
+                search_run_id=run_id,
+                needs_review=bool(record.get("needs_review")),
+            )
+        except Exception as e:
+            log.warning("upsert failed for %s: %s", record.get("url"), e)
+            continue
+        saved_ids.append(result.job_id)
+        if result.inserted:
+            inserted += 1
+        else:
+            updated += 1
+        if record.get("needs_review"):
+            needs_review += 1
+
+    state["saved_jobs"] = saved_ids
+    _event(
+        state,
+        "save_jobs_done",
+        f"{inserted} inserted / {updated} updated / {needs_review} flagged for review",
+    )
     return state
 
 

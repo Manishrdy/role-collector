@@ -11,6 +11,7 @@ from job_agent.browser.safety import (
     is_blocked_download,
     is_login_page,
     is_shortener,
+    normalize_candidate_url,
 )
 
 # --- canonicalisation ---------------------------------------------------------
@@ -105,3 +106,60 @@ def test_extra_allowed_lets_resolved_company_domain_through() -> None:
 def test_assert_safe_raises_on_block() -> None:
     with pytest.raises(UrlSafetyError):
         assert_safe("https://example.com/jobs")
+
+
+# --- normalize_candidate_url --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        # Ashby apply paths with tracking — strip both.
+        (
+            "https://jobs.ashbyhq.com/acme/11111111-2222-3333-4444-555555555555/application?utm_source=x",
+            "https://jobs.ashbyhq.com/acme/11111111-2222-3333-4444-555555555555",
+        ),
+        (
+            "https://jobs.ashbyhq.com/acme/11111111-2222-3333-4444-555555555555/application",
+            "https://jobs.ashbyhq.com/acme/11111111-2222-3333-4444-555555555555",
+        ),
+        # Lever apply path.
+        (
+            "https://jobs.lever.co/acme/abcdef01-2345-6789-abcd-ef0123456789/apply",
+            "https://jobs.lever.co/acme/abcdef01-2345-6789-abcd-ef0123456789",
+        ),
+        # Greenhouse apply form.
+        (
+            "https://boards.greenhouse.io/acme/jobs/9876543/applications/new",
+            "https://boards.greenhouse.io/acme/jobs/9876543",
+        ),
+        (
+            "https://job-boards.greenhouse.io/acme/jobs/9876543/application",
+            "https://job-boards.greenhouse.io/acme/jobs/9876543",
+        ),
+    ],
+)
+def test_normalize_strips_apply_suffix_for_known_ats(raw: str, expected: str) -> None:
+    assert normalize_candidate_url(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Already-canonical detail URLs are returned unchanged.
+        "https://jobs.ashbyhq.com/acme/11111111-2222-3333-4444-555555555555",
+        "https://boards.greenhouse.io/acme/jobs/9876543",
+        # Off-allowlist URL — leave it alone, the safety layer will reject it.
+        "https://random-blog.example/apply",
+    ],
+)
+def test_normalize_leaves_unrelated_urls_unchanged(url: str) -> None:
+    assert normalize_candidate_url(url) == url
+
+
+def test_normalize_then_check_url_accepts_apply_candidate() -> None:
+    """The fix: a Phase-2 apply-tracking link survives the safety layer after normalization."""
+    raw = "https://jobs.ashbyhq.com/acme/11111111-2222-3333-4444-555555555555/application?utm_source=x"
+    normalized = normalize_candidate_url(raw)
+    decision = check_url(normalized)
+    assert decision.allowed, decision.reason

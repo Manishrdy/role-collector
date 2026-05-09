@@ -1,6 +1,9 @@
 """SQLite schema migrator. Idempotent — safe to run on every startup.
 
 Run via:  python -m job_agent.db.migrate
+
+The base schema lives in `schema.sql`. For column additions to existing DBs,
+add a step to `_post_schema_migrations()` — each step must be safe to re-run.
 """
 
 from __future__ import annotations
@@ -13,6 +16,19 @@ from job_agent.config import load_config
 SCHEMA_FILE = Path(__file__).parent / "schema.sql"
 
 
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(r[1] == column for r in rows)
+
+
+def _post_schema_migrations(conn: sqlite3.Connection) -> None:
+    """Run idempotent ALTERs for changes added after the initial schema."""
+    if not _column_exists(conn, "jobs", "needs_review"):
+        conn.execute(
+            "ALTER TABLE jobs ADD COLUMN needs_review INTEGER NOT NULL DEFAULT 0"
+        )
+
+
 def migrate(db_path: str | Path | None = None) -> Path:
     """Create schema in the configured SQLite file. Returns the resolved path."""
     cfg = load_config()
@@ -22,6 +38,7 @@ def migrate(db_path: str | Path | None = None) -> Path:
     schema_sql = SCHEMA_FILE.read_text()
     with sqlite3.connect(resolved) as conn:
         conn.executescript(schema_sql)
+        _post_schema_migrations(conn)
         conn.commit()
     return resolved
 

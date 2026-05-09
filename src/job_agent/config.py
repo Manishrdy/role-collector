@@ -23,6 +23,9 @@ class LLMSection(BaseModel):
     model: str = "qwen3:8b"
     temperature: float = 0.0
     max_context_chars_per_page: int = 12000
+    request_timeout_seconds: float = 90.0
+    # Below this confidence, extracted jobs are saved with needs_review=1.
+    low_confidence_threshold: float = 0.5
 
 
 class SearchSection(BaseModel):

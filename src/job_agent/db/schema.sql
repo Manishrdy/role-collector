@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   source_query TEXT,
   status TEXT DEFAULT 'discovered',
   extraction_confidence REAL,
+  needs_review INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY(company_id) REFERENCES companies(id),

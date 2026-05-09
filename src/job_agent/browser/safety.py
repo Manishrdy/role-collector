@@ -7,6 +7,7 @@ cannot route around them via prompt manipulation.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -134,6 +135,55 @@ def canonicalize_url(url: str) -> str:
 def is_login_page(url: str) -> bool:
     path = urlparse(url).path.lower()
     return any(frag in path for frag in _LOGIN_PATH_FRAGMENTS)
+
+
+# Per-ATS rules for stripping apply-flow suffixes from a candidate URL so
+# the safety layer doesn't reject what is actually a valid posting. We only
+# do this for ATS hosts whose URL shape we know — leave everything else
+# untouched.
+_ATS_APPLY_SUFFIX_RULES: tuple[tuple[str, str], ...] = (
+    # Ashby:        /<co>/<uuid>/application[/...]
+    ("jobs.ashbyhq.com", r"^(/[^/]+/[0-9a-fA-F-]{20,})/application(?:/.*)?$"),
+    # Lever:        /<co>/<uuid>/apply
+    ("jobs.lever.co", r"^(/[^/]+/[0-9a-fA-F-]{20,})/apply/?$"),
+    # Greenhouse:   /<co>/jobs/<id>/applications/new (and similar tails)
+    ("boards.greenhouse.io", r"^(/[^/]+/jobs/\d+)/applications?(?:/.*)?$"),
+    ("job-boards.greenhouse.io", r"^(/[^/]+/jobs/\d+)/applications?(?:/.*)?$"),
+)
+
+
+def normalize_candidate_url(url: str) -> str:
+    """Rewrite an ATS apply-flow URL to its canonical detail URL.
+
+    Phase-2 search occasionally surfaces ad-tracked links pointing at the
+    apply form (``/<co>/<uuid>/application?utm_source=...``). The detail
+    page lives one path segment up — this helper strips the apply suffix
+    and any tracking query string for known ATS hosts. Unknown URLs are
+    returned unchanged.
+    """
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    for needle, pattern in _ATS_APPLY_SUFFIX_RULES:
+        if host != needle and not host.endswith("." + needle):
+            continue
+        m = re.match(pattern, parsed.path)
+        if not m:
+            return url
+        new_path = m.group(1)
+        # Drop the entire query string (it's apply-flow tracking, not the
+        # detail page's params) and the fragment.
+        rebuilt: str = urlunparse(
+            (
+                parsed.scheme.lower() or "https",
+                parsed.netloc.lower(),
+                new_path,
+                parsed.params,
+                "",
+                "",
+            )
+        )
+        return rebuilt
+    return url
 
 
 def is_apply_path(url: str) -> bool:
