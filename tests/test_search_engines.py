@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from job_agent.browser.search_engines import (
-    bing_search_url,
     detect_block,
     google_search_url,
     parse_results,
 )
 
-# --- URL builders -------------------------------------------------------------
+# --- URL builder --------------------------------------------------------------
 
 
 def test_google_url_includes_q_and_time_filter() -> None:
@@ -29,49 +28,37 @@ def test_google_url_no_tbs_when_time_window_is_any() -> None:
     assert "tbs=" not in url
 
 
-def test_bing_url_includes_filters_and_count() -> None:
-    url = bing_search_url("x", "past_week", count=10)
-    assert url.startswith("https://www.bing.com/search?")
-    assert "count=10" in url
-    assert "filters=" in url
-
-
 # --- Block detection ----------------------------------------------------------
 
 
-def test_detect_google_block_redirect_to_sorry() -> None:
+def test_detect_google_block_redirect() -> None:
     reason = detect_block(
-        current_url="https://sorry.google.com/sorry/index?continue=...",
+        current_url="https://www.google.com/sorry/index?continue=...",
         page_text="anything",
-        engine="google",
     )
-    assert reason is not None
-    assert "google_block_redirect" in reason
+    assert reason == "google_block_redirect"
+
+
+def test_detect_google_block_host() -> None:
+    reason = detect_block(
+        current_url="https://sorry.google.com/foo",
+        page_text="anything",
+    )
+    assert reason and reason.startswith("google_block_host")
 
 
 def test_detect_google_unusual_traffic_text() -> None:
     reason = detect_block(
-        current_url="https://www.google.com/sorry/index",
+        current_url="https://www.google.com/some-page",
         page_text="Our systems have detected unusual traffic from your computer network",
-        engine="google",
     )
     assert reason == "google_block_text"
-
-
-def test_detect_bing_block_text() -> None:
-    reason = detect_block(
-        current_url="https://www.bing.com/search?q=x",
-        page_text="We're sorry, but we are unable to display results",
-        engine="bing",
-    )
-    assert reason == "bing_block_text"
 
 
 def test_detect_block_returns_none_for_normal_page() -> None:
     reason = detect_block(
         current_url="https://www.google.com/search?q=x",
         page_text="A list of search results...",
-        engine="google",
     )
     assert reason is None
 
@@ -110,9 +97,7 @@ _GOOGLE_FIXTURE = """
 def test_parse_results_filters_to_target_domain_and_unwraps_redirect() -> None:
     results = parse_results(
         page_html=_GOOGLE_FIXTURE,
-        page=None,
         target_domain="jobs.ashbyhq.com",
-        engine="google",
         query='site:jobs.ashbyhq.com "backend engineer"',
         time_window="past_24h",
         max_results=10,
@@ -127,9 +112,7 @@ def test_parse_results_filters_to_target_domain_and_unwraps_redirect() -> None:
 def test_parse_results_sets_rank_and_metadata() -> None:
     results = parse_results(
         page_html=_GOOGLE_FIXTURE,
-        page=None,
         target_domain="jobs.ashbyhq.com",
-        engine="google",
         query="q",
         time_window="past_24h",
         max_results=10,
@@ -148,15 +131,13 @@ def test_parse_results_sets_rank_and_metadata() -> None:
 def test_parse_results_no_target_domain_keeps_all_external_links() -> None:
     results = parse_results(
         page_html=_GOOGLE_FIXTURE,
-        page=None,
         target_domain=None,
-        engine="google",
         query="q",
         time_window="past_24h",
         max_results=10,
     )
-    # The 'internal google link' is filtered (engine=google); example.com
-    # plus the two ATS links should pass.
+    # The 'internal google link' is filtered (engine=google by default);
+    # example.com plus the two ATS links should pass.
     urls = [r.url for r in results]
     assert any("example.com" in u for u in urls)
     assert len(urls) == 3
@@ -165,9 +146,7 @@ def test_parse_results_no_target_domain_keeps_all_external_links() -> None:
 def test_parse_results_caps_at_max_results() -> None:
     results = parse_results(
         page_html=_GOOGLE_FIXTURE,
-        page=None,
         target_domain="jobs.ashbyhq.com",
-        engine="google",
         query="q",
         time_window="past_24h",
         max_results=1,

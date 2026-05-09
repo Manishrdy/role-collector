@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -8,7 +10,6 @@ from job_agent.browser.search_engines import SearchOutcome, SearchResult
 from job_agent.config import (
     AppConfig,
     ATSGoogleSearchSection,
-    BrowserSection,
     LimitsSection,
     SearchSection,
     SourcesSection,
@@ -29,7 +30,6 @@ def cfg() -> AppConfig:
         sources=SourcesSection(
             ats_google_search=ATSGoogleSearchSection(enabled=True, domains=["jobs.ashbyhq.com"]),
         ),
-        browser=BrowserSection(search_engine_order=["google", "bing"]),
         limits=LimitsSection(
             min_delay_between_searches_seconds=0,
             max_delay_between_searches_seconds=0,
@@ -37,14 +37,14 @@ def cfg() -> AppConfig:
     )
 
 
-def _mk_result(url: str, rank: int, *, engine: str = "google") -> SearchResult:
+def _mk_result(url: str, rank: int) -> SearchResult:
     return SearchResult(
         title=f"title {rank}",
         url=url,
         canonical_url=url,
         snippet="snip",
         rank=rank,
-        engine=engine,
+        engine="google",
         query="q",
         time_window="past_24h",
     )
@@ -64,13 +64,40 @@ def _plans(n: int) -> list[PlannedQuery]:
     ]
 
 
+def _drive_with_fake(
+    *,
+    cfg: AppConfig,
+    plans: list[PlannedQuery],
+    fake_run_query: Any,
+) -> tuple[list[ats_search.CandidateURL], ats_search.OrchestrationStats]:
+    """Run the async orchestrator core directly with a fake query function.
+
+    Sidesteps nodriver entirely — tests only the orchestration logic.
+    """
+
+    async def go() -> tuple[list[ats_search.CandidateURL], ats_search.OrchestrationStats]:
+        return await ats_search._drive(
+            browser=object(),
+            cfg=cfg,
+            plans=plans,
+            max_results_per_query=5,
+            search_run_id=None,
+            debug_dump_dir=None,
+            sleep_async=lambda _: asyncio.sleep(0),
+        )
+
+    return asyncio.run(go())
+
+
 def test_google_returns_results_no_block(
     cfg: AppConfig, monkeypatch: pytest.MonkeyPatch, isolated_db: Path
 ) -> None:
-    """Happy path: Google returns results for all queries; Bing untouched."""
+    """Happy path: Google returns results for all queries."""
     google_calls: list[str] = []
 
-    def fake_google(context, *, query, time_window, target_domain, max_results, **kw):
+    async def fake_run_query(
+        browser, *, query, time_window, target_domain, max_results, debug_dump_dir
+    ):
         google_calls.append(query)
         return SearchOutcome(
             engine="google",
@@ -79,19 +106,9 @@ def test_google_returns_results_no_block(
             results=[_mk_result(f"https://jobs.ashbyhq.com/acme/{len(google_calls)}", 1)],
         )
 
-    def fake_bing(*a, **kw):
-        raise AssertionError("bing should not be called")
+    monkeypatch.setattr(ats_search, "_run_query", fake_run_query)
 
-    monkeypatch.setattr(ats_search, "run_google_search", fake_google)
-    monkeypatch.setattr(ats_search, "run_bing_search", fake_bing)
-
-    candidates, stats = ats_search.run_ats_search(
-        context=object(),  # type: ignore[arg-type]
-        cfg=cfg,
-        plans=_plans(3),
-        max_results_per_query=5,
-        sleep_fn=lambda _: None,
-    )
+    candidates, stats = _drive_with_fake(cfg=cfg, plans=_plans(3), fake_run_query=fake_run_query)
     assert len(google_calls) == 3
     assert stats.queries_succeeded == 3
     assert stats.queries_blocked == 0
@@ -99,14 +116,15 @@ def test_google_returns_results_no_block(
     assert len(candidates) == 3
 
 
-def test_google_blocks_on_first_query_falls_back_to_bing(
+def test_google_block_stops_subsequent_queries(
     cfg: AppConfig, monkeypatch: pytest.MonkeyPatch, isolated_db: Path
 ) -> None:
-    """When Google blocks, the orchestrator switches to Bing for the rest of the run."""
+    """Once Google blocks, the orchestrator stops asking — no fallback engine."""
     google_calls = 0
-    bing_calls = 0
 
-    def fake_google(context, *, query, time_window, target_domain, max_results, **kw):
+    async def fake_run_query(
+        browser, *, query, time_window, target_domain, max_results, debug_dump_dir
+    ):
         nonlocal google_calls
         google_calls += 1
         return SearchOutcome(
@@ -117,33 +135,15 @@ def test_google_blocks_on_first_query_falls_back_to_bing(
             blocked_reason="google_block_redirect",
         )
 
-    def fake_bing(context, *, query, time_window, target_domain, max_results, **kw):
-        nonlocal bing_calls
-        bing_calls += 1
-        return SearchOutcome(
-            engine="bing",
-            query=query,
-            time_window=time_window,
-            results=[_mk_result(f"https://jobs.ashbyhq.com/x/{bing_calls}", 1, engine="bing")],
-        )
+    monkeypatch.setattr(ats_search, "_run_query", fake_run_query)
 
-    monkeypatch.setattr(ats_search, "run_google_search", fake_google)
-    monkeypatch.setattr(ats_search, "run_bing_search", fake_bing)
-
-    candidates, stats = ats_search.run_ats_search(
-        context=object(),  # type: ignore[arg-type]
-        cfg=cfg,
-        plans=_plans(3),
-        max_results_per_query=5,
-        sleep_fn=lambda _: None,
-    )
-    # Google is tried only once — once it's blocked we don't keep asking.
+    candidates, stats = _drive_with_fake(cfg=cfg, plans=_plans(3), fake_run_query=fake_run_query)
+    # Google is tried only once — once blocked, the rest are skipped.
     assert google_calls == 1
-    assert bing_calls == 3
     assert stats.google_blocked_at == 1
-    assert stats.queries_succeeded == 3
-    assert len(candidates) == 3
-    assert all(c.engine == "bing" for c in candidates)
+    assert stats.queries_blocked == 3  # 1 actual block + 2 skipped
+    assert stats.queries_succeeded == 0
+    assert candidates == []
 
 
 def test_dedup_across_queries(
@@ -151,7 +151,9 @@ def test_dedup_across_queries(
 ) -> None:
     """Two queries hitting the same canonical URL produce one CandidateURL."""
 
-    def fake_google(context, *, query, time_window, target_domain, max_results, **kw):
+    async def fake_run_query(
+        browser, *, query, time_window, target_domain, max_results, debug_dump_dir
+    ):
         return SearchOutcome(
             engine="google",
             query=query,
@@ -159,71 +161,40 @@ def test_dedup_across_queries(
             results=[_mk_result("https://jobs.ashbyhq.com/acme/12345", 1)],
         )
 
-    monkeypatch.setattr(ats_search, "run_google_search", fake_google)
-    monkeypatch.setattr(ats_search, "run_bing_search", lambda *a, **kw: None)
+    monkeypatch.setattr(ats_search, "_run_query", fake_run_query)
 
-    candidates, stats = ats_search.run_ats_search(
-        context=object(),  # type: ignore[arg-type]
-        cfg=cfg,
-        plans=_plans(3),
-        max_results_per_query=5,
-        sleep_fn=lambda _: None,
-    )
+    candidates, stats = _drive_with_fake(cfg=cfg, plans=_plans(3), fake_run_query=fake_run_query)
     assert len(candidates) == 1
     assert stats.duplicate_results == 2
     assert stats.total_results == 1
 
 
-def test_both_engines_blocked_marks_query_failed(
-    cfg: AppConfig, monkeypatch: pytest.MonkeyPatch, isolated_db: Path
-) -> None:
-    def blocked(engine: str):
-        def fn(context, *, query, time_window, target_domain, max_results, **kw):
-            return SearchOutcome(
-                engine=engine,
-                query=query,
-                time_window=time_window,
-                results=[],
-                blocked_reason=f"{engine}_blocked",
-            )
-
-        return fn
-
-    monkeypatch.setattr(ats_search, "run_google_search", blocked("google"))
-    monkeypatch.setattr(ats_search, "run_bing_search", blocked("bing"))
-
-    candidates, stats = ats_search.run_ats_search(
-        context=object(),  # type: ignore[arg-type]
-        cfg=cfg,
-        plans=_plans(2),
-        max_results_per_query=5,
-        sleep_fn=lambda _: None,
-    )
-    assert candidates == []
-    # Once both engines have blocked once, subsequent queries are skipped
-    # entirely (engine_order is exhausted).
-    assert stats.queries_blocked >= 1
-    assert stats.bing_blocked is True
-    assert stats.google_blocked_at == 1
-
-
 def test_sleep_is_invoked_between_queries(
     cfg: AppConfig, monkeypatch: pytest.MonkeyPatch, isolated_db: Path
 ) -> None:
+    """Sleep happens BETWEEN queries, not after the last one."""
     sleeps: list[float] = []
 
-    def fake_google(context, *, query, time_window, target_domain, max_results, **kw):
+    async def fake_run_query(
+        browser, *, query, time_window, target_domain, max_results, debug_dump_dir
+    ):
         return SearchOutcome(engine="google", query=query, time_window=time_window, results=[])
 
-    monkeypatch.setattr(ats_search, "run_google_search", fake_google)
-    monkeypatch.setattr(ats_search, "run_bing_search", lambda *a, **kw: None)
+    async def record_sleep(s: float) -> None:
+        sleeps.append(s)
 
-    ats_search.run_ats_search(
-        context=object(),  # type: ignore[arg-type]
-        cfg=cfg,
-        plans=_plans(3),
-        max_results_per_query=5,
-        sleep_fn=sleeps.append,
-    )
-    # Sleep happens BETWEEN queries, not after the last one.
+    monkeypatch.setattr(ats_search, "_run_query", fake_run_query)
+
+    async def go() -> None:
+        await ats_search._drive(
+            browser=object(),
+            cfg=cfg,
+            plans=_plans(3),
+            max_results_per_query=5,
+            search_run_id=None,
+            debug_dump_dir=None,
+            sleep_async=record_sleep,
+        )
+
+    asyncio.run(go())
     assert len(sleeps) == 2

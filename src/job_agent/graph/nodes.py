@@ -11,7 +11,6 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from job_agent.browser.profile import launch_sync_context
 from job_agent.config import load_config
 from job_agent.db import repo
 from job_agent.graph.state import AgentState
@@ -105,15 +104,13 @@ def run_ats_google_search_node(state: AgentState) -> AgentState:
         + (f" (debug dump -> {debug_dir})" if debug_dir else ""),
     )
 
-    with launch_sync_context(cfg) as ctx:
-        candidates, stats = run_ats_search(
-            context=ctx,
-            cfg=cfg,
-            plans=plans,
-            max_results_per_query=max_results,
-            search_run_id=run_id,
-            debug_dump_dir=debug_dir,
-        )
+    candidates, stats = run_ats_search(
+        cfg=cfg,
+        plans=plans,
+        max_results_per_query=max_results,
+        search_run_id=run_id,
+        debug_dump_dir=debug_dir,
+    )
 
     state["candidate_urls"] = [asdict(c) for c in candidates]
     _event(

@@ -1,15 +1,17 @@
 """Dedicated Chromium profile manager for the job agent.
 
-The browser is launched with a persistent context isolated from the user's
-personal Chrome (no Gmail, no saved passwords, no bank cookies). See
-design_plan.md §5.2.
+Used for non-search browsing (e.g. fetching ATS job-detail pages in
+Phase 3). The Phase-2 search path is driven by ``nodriver`` instead —
+see ``sources/ats_search.py``.
 
-Phase-1 exposes a context-manager-style helper. Real Playwright invocations
-land in Phase 2 once the search modules are wired.
+The browser is launched with a persistent context isolated from the
+user's personal Chrome (no Gmail, no saved passwords, no bank cookies).
+See design_plan.md §5.2.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
@@ -64,12 +66,13 @@ async def launch_context(cfg: AppConfig | None = None) -> AsyncIterator[AsyncBro
         try:
             yield context
         finally:
-            await context.close()
+            with contextlib.suppress(Exception):
+                await context.close()
 
 
 @contextmanager
 def launch_sync_context(cfg: AppConfig | None = None) -> Iterator[SyncBrowserContext]:
-    """Sync persistent Chromium context — used by the Phase-2 search drivers.
+    """Sync persistent Chromium context.
 
     Cannot run inside a thread that already has a running asyncio loop
     (Playwright sync API restriction). Our CLI is plain sync, so this is fine.
@@ -89,4 +92,5 @@ def launch_sync_context(cfg: AppConfig | None = None) -> Iterator[SyncBrowserCon
         try:
             yield context
         finally:
-            context.close()
+            with contextlib.suppress(Exception):
+                context.close()

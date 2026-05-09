@@ -61,9 +61,6 @@ class BrowserSection(BaseModel):
     downloads_allowed: bool = False
     min_delay_seconds: int = 5
     max_delay_seconds: int = 20
-    search_engine_order: list[Literal["google", "bing"]] = Field(
-        default_factory=lambda: ["google", "bing"]  # type: ignore[arg-type]
-    )
 
 
 class LimitsSection(BaseModel):

@@ -58,9 +58,6 @@ browser:
   downloads_allowed: false
   min_delay_seconds: 5
   max_delay_seconds: 20
-  search_engine_order:
-    - google
-    - bing
 
 limits:
   max_pages_per_domain_per_run: 5
@@ -94,8 +91,6 @@ tracing:
 allowlist_domains:
   - google.com
   - www.google.com
-  - bing.com
-  - www.bing.com
   - jobs.ashbyhq.com
   - jobs.lever.co
   - job-boards.greenhouse.io
