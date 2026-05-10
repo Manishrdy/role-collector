@@ -12,7 +12,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -164,6 +164,11 @@ def upsert_job(
     source_query: str | None,
     search_run_id: int | None,
     needs_review: bool,
+    description_hash: str | None = None,
+    description_embedding: list[float] | None = None,
+    duplicate_status: str = "new",
+    duplicate_of_job_id: int | None = None,
+    duplicate_score: float | None = None,
     db_path: str | Path | None = None,
 ) -> UpsertResult:
     """Insert or update a jobs row.
@@ -182,6 +187,9 @@ def upsert_job(
     normalized_title = _normalize(extracted.title)
     skills_json = json.dumps(extracted.skills) if extracted.skills else None
     description = extracted.description or extracted.description_summary
+    embedding_json = (
+        json.dumps(description_embedding) if description_embedding else None
+    )
 
     with connect(db_path) as conn:
         existing = None
@@ -223,6 +231,11 @@ def upsert_job(
                        -- the fingerprint.
                        ats_type = COALESCE(ats_type, ?),
                        ats_job_id = COALESCE(ats_job_id, ?),
+                       description_hash = COALESCE(?, description_hash),
+                       description_embedding_json = COALESCE(?, description_embedding_json),
+                       duplicate_status = ?,
+                       duplicate_of_job_id = ?,
+                       duplicate_score = ?,
                        extraction_confidence = ?,
                        needs_review = ?
                  WHERE id = ?
@@ -244,6 +257,11 @@ def upsert_job(
                     extracted.salary_text,
                     extracted.ats_type,
                     extracted.ats_job_id,
+                    description_hash,
+                    embedding_json,
+                    duplicate_status,
+                    duplicate_of_job_id,
+                    duplicate_score,
                     extracted.extraction_confidence,
                     1 if needs_review else 0,
                     job_id,
@@ -261,12 +279,16 @@ def upsert_job(
                     ats_type, ats_job_id,
                     posted_date, posted_date_confidence,
                     first_seen_at, last_seen_at,
-                    description, skills_json,
+                    description, description_hash, description_embedding_json,
+                    skills_json,
                     seniority, employment_type, salary_text,
                     source_type, source_query,
+                    duplicate_status, duplicate_of_job_id, duplicate_score,
                     extraction_confidence, needs_review,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
                 """,
                 (
                     company_id,
@@ -285,12 +307,17 @@ def upsert_job(
                     now,
                     now,
                     description,
+                    description_hash,
+                    embedding_json,
                     skills_json,
                     extracted.seniority,
                     extracted.employment_type,
                     extracted.salary_text,
                     source_type,
                     source_query,
+                    duplicate_status,
+                    duplicate_of_job_id,
+                    duplicate_score,
                     extracted.extraction_confidence,
                     1 if needs_review else 0,
                     now,
@@ -321,6 +348,162 @@ def upsert_job(
         )
 
     return UpsertResult(job_id=job_id, inserted=inserted)
+
+
+def find_job_by_description_hash(
+    description_hash: str,
+    *,
+    db_path: str | Path | None = None,
+) -> int | None:
+    """Return the id of any job already stored with the given description hash."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM jobs WHERE description_hash = ? LIMIT 1",
+            (description_hash,),
+        ).fetchone()
+    return int(row["id"]) if row else None
+
+
+def find_dedup_candidates(
+    *,
+    normalized_company_name: str,
+    normalized_title: str,
+    description_hash: str | None,
+    days_back: int,
+    exclude_job_id: int | None = None,
+    db_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return candidate jobs for semantic comparison (design §18.5).
+
+    Pre-filter: same normalised company OR same normalised title OR same
+    description hash, restricted to jobs whose ``last_seen_at`` is within
+    ``days_back`` days. Caller does the rapidfuzz-and-embedding scoring.
+    """
+    cutoff = datetime.now(UTC) - timedelta(days=days_back)
+    cutoff_iso = cutoff.isoformat(timespec="seconds")
+
+    sql = """
+        SELECT id, company_name, normalized_company_name,
+               title, normalized_title,
+               location, description, description_embedding_json,
+               skills_json, ats_type, ats_job_id,
+               canonical_url, last_seen_at
+          FROM jobs
+         WHERE last_seen_at >= ?
+           AND (
+                normalized_company_name = ?
+             OR normalized_title = ?
+             OR (description_hash IS NOT NULL AND description_hash = ?)
+           )
+    """
+    params: list[Any] = [
+        cutoff_iso,
+        normalized_company_name,
+        normalized_title,
+        description_hash or "",
+    ]
+    if exclude_job_id is not None:
+        sql += " AND id != ?"
+        params.append(exclude_job_id)
+
+    with connect(db_path) as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        out.append(
+            {
+                "id": int(r["id"]),
+                "company_name": r["company_name"],
+                "normalized_company_name": r["normalized_company_name"],
+                "title": r["title"],
+                "normalized_title": r["normalized_title"],
+                "location": r["location"],
+                "description": r["description"],
+                "description_embedding_json": r["description_embedding_json"],
+                "skills_json": r["skills_json"],
+                "ats_type": r["ats_type"],
+                "ats_job_id": r["ats_job_id"],
+                "canonical_url": r["canonical_url"],
+                "last_seen_at": r["last_seen_at"],
+            }
+        )
+    return out
+
+
+def persist_duplicate_candidate(
+    *,
+    job_id: int,
+    candidate_job_id: int,
+    duplicate_score: float,
+    company_score: float,
+    title_score: float,
+    description_score: float,
+    location_score: float,
+    skills_score: float,
+    decision: str,
+    db_path: str | Path | None = None,
+) -> int:
+    """Append a duplicate_candidates audit row. Returns the new id."""
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO duplicate_candidates (
+                job_id, candidate_job_id, duplicate_score,
+                company_score, title_score, description_score,
+                location_score, skills_score, decision, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_id,
+                candidate_job_id,
+                duplicate_score,
+                company_score,
+                title_score,
+                description_score,
+                location_score,
+                skills_score,
+                decision,
+                _utc_now_iso(),
+            ),
+        )
+        new_id = cur.lastrowid
+        assert new_id is not None
+        return new_id
+
+
+def touch_existing_job(
+    *,
+    job_id: int,
+    raw_url: str,
+    canonical_url: str,
+    source_type: str,
+    source_query: str | None,
+    search_run_id: int | None,
+    db_path: str | Path | None = None,
+) -> None:
+    """Mark an existing job as re-discovered (design §18.1 exact_duplicate).
+
+    Bumps ``last_seen_at`` / ``updated_at`` and appends a ``job_sources``
+    row. Used when an exact-duplicate (by description hash, canonical URL,
+    or ATS fingerprint) is found and we don't want to insert a new
+    ``jobs`` row.
+    """
+    with connect(db_path) as conn:
+        now = _utc_now_iso()
+        conn.execute(
+            "UPDATE jobs SET last_seen_at = ?, updated_at = ? WHERE id = ?",
+            (now, now, job_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO job_sources
+                (job_id, source_type, source_url, canonical_source_url, source_query,
+                 search_run_id, found_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (job_id, source_type, raw_url, canonical_url, source_query, search_run_id, now),
+        )
 
 
 def record_page_fetch(

@@ -174,6 +174,128 @@ def test_upsert_job_backfills_ats_fingerprints(isolated_db: Path) -> None:
     assert row == ("ashby", "abc-123")
 
 
+def test_find_job_by_description_hash_returns_existing(isolated_db: Path) -> None:
+    migrate()
+    repo.upsert_job(
+        extracted=_make_extracted(),
+        canonical_url="https://jobs.ashbyhq.com/acme/abc-123",
+        raw_url="https://jobs.ashbyhq.com/acme/abc-123",
+        source_type="ats_google_search",
+        source_query=None,
+        search_run_id=None,
+        needs_review=False,
+        description_hash="deadbeef",
+    )
+    assert repo.find_job_by_description_hash("deadbeef") is not None
+    assert repo.find_job_by_description_hash("nope") is None
+
+
+def test_find_dedup_candidates_filters_by_company_or_title_and_recency(
+    isolated_db: Path,
+) -> None:
+    migrate()
+    # Two jobs at the same company, one fresh, one too old.
+    fresh = repo.upsert_job(
+        extracted=_make_extracted(),
+        canonical_url="https://jobs.ashbyhq.com/acme/recent",
+        raw_url="https://jobs.ashbyhq.com/acme/recent",
+        source_type="ats_google_search",
+        source_query=None,
+        search_run_id=None,
+        needs_review=False,
+    )
+    # Hand-edit last_seen_at on a second job to push it past 90 days.
+    stale = repo.upsert_job(
+        extracted=_make_extracted(),
+        canonical_url="https://jobs.ashbyhq.com/acme/stale",
+        raw_url="https://jobs.ashbyhq.com/acme/stale",
+        source_type="ats_google_search",
+        source_query=None,
+        search_run_id=None,
+        needs_review=False,
+    )
+    with sqlite3.connect(isolated_db) as conn:
+        conn.execute(
+            "UPDATE jobs SET last_seen_at = '2020-01-01T00:00:00+00:00' WHERE id = ?",
+            (stale.job_id,),
+        )
+
+    cands = repo.find_dedup_candidates(
+        normalized_company_name="acme",
+        normalized_title="senior software engineer",
+        description_hash=None,
+        days_back=90,
+        exclude_job_id=fresh.job_id,
+    )
+    candidate_ids = [c["id"] for c in cands]
+    assert fresh.job_id not in candidate_ids  # excluded
+    assert stale.job_id not in candidate_ids  # too old
+
+
+def test_touch_existing_job_bumps_and_appends_source(isolated_db: Path) -> None:
+    migrate()
+    initial = repo.upsert_job(
+        extracted=_make_extracted(),
+        canonical_url="https://jobs.ashbyhq.com/acme/abc-123",
+        raw_url="https://jobs.ashbyhq.com/acme/abc-123",
+        source_type="ats_google_search",
+        source_query=None,
+        search_run_id=None,
+        needs_review=False,
+    )
+    repo.touch_existing_job(
+        job_id=initial.job_id,
+        raw_url="https://jobs.ashbyhq.com/acme/different-shape",
+        canonical_url="https://jobs.ashbyhq.com/acme/different-shape",
+        source_type="ats_google_search",
+        source_query="another",
+        search_run_id=None,
+    )
+    with sqlite3.connect(isolated_db) as conn:
+        n_jobs = conn.execute("SELECT count(*) FROM jobs").fetchone()[0]
+        n_sources = conn.execute(
+            "SELECT count(*) FROM job_sources WHERE job_id = ?", (initial.job_id,)
+        ).fetchone()[0]
+    assert n_jobs == 1  # no new row inserted
+    assert n_sources == 2  # two source rows: original upsert + the touch
+
+
+def test_persist_duplicate_candidate_writes_audit_row(isolated_db: Path) -> None:
+    migrate()
+    a = repo.upsert_job(
+        extracted=_make_extracted(),
+        canonical_url="https://jobs.ashbyhq.com/acme/a",
+        raw_url="https://jobs.ashbyhq.com/acme/a",
+        source_type="ats_google_search",
+        source_query=None,
+        search_run_id=None,
+        needs_review=False,
+    )
+    b = repo.upsert_job(
+        extracted=_make_extracted(ats_job_id="zzz-999"),
+        canonical_url="https://jobs.ashbyhq.com/acme/b",
+        raw_url="https://jobs.ashbyhq.com/acme/b",
+        source_type="ats_google_search",
+        source_query=None,
+        search_run_id=None,
+        needs_review=False,
+    )
+    repo.persist_duplicate_candidate(
+        job_id=a.job_id,
+        candidate_job_id=b.job_id,
+        duplicate_score=0.86,
+        company_score=1.0,
+        title_score=0.9,
+        description_score=0.8,
+        location_score=1.0,
+        skills_score=0.5,
+        decision="possible_duplicate",
+    )
+    with sqlite3.connect(isolated_db) as conn:
+        rows = conn.execute("SELECT decision, duplicate_score FROM duplicate_candidates").fetchall()
+    assert rows == [("possible_duplicate", 0.86)]
+
+
 def test_record_page_fetch_inserts_row(isolated_db: Path) -> None:
     migrate()
     fetch_id = repo.record_page_fetch(

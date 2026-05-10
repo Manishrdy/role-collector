@@ -8,6 +8,7 @@ the deterministic parser chain, and the Ollama LLM fallback.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import asdict
 from pathlib import Path
@@ -17,6 +18,9 @@ from job_agent.browser.page_fetch import FetchedPage, fetch_pages
 from job_agent.browser.safety import normalize_candidate_url
 from job_agent.config import load_config
 from job_agent.db import repo
+from job_agent.dedupe import embeddings as embedding_mod
+from job_agent.dedupe.hashing import description_hash as compute_description_hash
+from job_agent.dedupe.scoring import JobForScoring, decide, score_pair
 from job_agent.extract.llm import OllamaExtractor
 from job_agent.extract.pipeline import extract_job
 from job_agent.extract.schema import ExtractedJob
@@ -352,12 +356,228 @@ def extract_job_data_node(state: AgentState) -> AgentState:
 
 
 def exact_idempotency_check_node(state: AgentState) -> AgentState:
-    _event(state, "idempotency_check", "[stub] no jobs to check")
+    """Layer 1 dedup (design §18.1).
+
+    Computes a stable description hash for each extracted job and flags
+    any whose hash matches an already-saved row in the database. Flagged
+    records are short-circuited at save time — no new ``jobs`` row gets
+    inserted; the existing row's ``last_seen_at`` is bumped and a
+    ``job_sources`` audit row is appended.
+
+    Records that don't collide pass through unchanged (with the hash
+    attached so the save layer persists it for future runs).
+    """
+    extracted = state.get("extracted_jobs", []) or []
+    if not extracted:
+        _event(state, "idempotency_check", "no extracted jobs to check")
+        return state
+
+    exact_hits = 0
+    for record in extracted:
+        job_dict = record.get("job") or {}
+        description = job_dict.get("description") or job_dict.get("description_summary")
+        d_hash = compute_description_hash(description)
+        record["description_hash"] = d_hash
+
+        if d_hash is None:
+            continue
+        existing_id = repo.find_job_by_description_hash(d_hash)
+        if existing_id is not None:
+            record["exact_dup_of_job_id"] = existing_id
+            exact_hits += 1
+
+    _event(
+        state,
+        "idempotency_check",
+        f"{exact_hits} exact-duplicate(s) of {len(extracted)} extracted",
+    )
     return state
 
 
+def _build_scoring_view(record: dict[str, Any], embedding: list[float] | None) -> JobForScoring:
+    job_dict = record.get("job") or {}
+    description = job_dict.get("description") or job_dict.get("description_summary") or ""
+    skills_raw = job_dict.get("skills") or []
+    skills: list[str] = [s for s in skills_raw if isinstance(s, str)]
+    return JobForScoring(
+        company=job_dict.get("company_name") or "",
+        title=job_dict.get("title") or "",
+        description=description,
+        location=job_dict.get("location"),
+        skills=skills,
+        embedding=embedding,
+    )
+
+
+def _candidate_to_scoring_view(candidate: dict[str, Any]) -> JobForScoring:
+    skills_raw: list[str] = []
+    if candidate.get("skills_json"):
+        try:
+            parsed = json.loads(candidate["skills_json"])
+            if isinstance(parsed, list):
+                skills_raw = [s for s in parsed if isinstance(s, str)]
+        except json.JSONDecodeError:
+            pass
+
+    embedding: list[float] | None = None
+    if candidate.get("description_embedding_json"):
+        try:
+            parsed_emb = json.loads(candidate["description_embedding_json"])
+            if isinstance(parsed_emb, list):
+                embedding = [float(x) for x in parsed_emb]
+        except (json.JSONDecodeError, TypeError, ValueError):
+            embedding = None
+
+    return JobForScoring(
+        company=candidate.get("company_name") or "",
+        title=candidate.get("title") or "",
+        description=candidate.get("description") or "",
+        location=candidate.get("location"),
+        skills=skills_raw,
+        embedding=embedding,
+    )
+
+
 def semantic_duplicate_check_node(state: AgentState) -> AgentState:
-    _event(state, "dedupe_check", "[stub] no jobs to dedupe")
+    """Layer 2 dedup (design §18.3-§18.6).
+
+    For each non-exact-dup extracted record, runs a rapidfuzz pre-filter
+    via ``repo.find_dedup_candidates`` (limited to the past 90 days),
+    computes per-pair weighted scores using sentence-transformers
+    embeddings + rapidfuzz + Jaccard, and tags the record with
+    ``duplicate_status``, ``duplicate_of_job_id``, and ``duplicate_score``
+    for the save layer to persist.
+    """
+    cfg = load_config()
+    extracted = state.get("extracted_jobs", []) or []
+    if not extracted:
+        _event(state, "dedupe_check", "no extracted jobs to dedupe")
+        return state
+
+    eligible = [r for r in extracted if r.get("exact_dup_of_job_id") is None]
+    if not eligible:
+        _event(state, "dedupe_check", "all records exact-dup'd; nothing to compare")
+        return state
+
+    # Collect descriptions to embed in a single batch — much cheaper than
+    # one model call per record. We also need embeddings for the existing
+    # candidates that don't already have one stored.
+    new_texts: list[str] = []
+    for record in eligible:
+        job_dict = record.get("job") or {}
+        text = (job_dict.get("description") or job_dict.get("description_summary") or "").strip()
+        new_texts.append(text)
+
+    new_embeddings: list[list[float] | None] = []
+    nonempty_idx = [i for i, t in enumerate(new_texts) if t]
+    if nonempty_idx:
+        encoded = embedding_mod.encode_texts([new_texts[i] for i in nonempty_idx])
+        encoded_iter = iter(encoded)
+        for i in range(len(new_texts)):
+            new_embeddings.append(next(encoded_iter) if i in set(nonempty_idx) else None)
+    else:
+        new_embeddings = [None] * len(new_texts)
+
+    weights = cfg.dedupe.weights
+    duplicate_threshold = cfg.dedupe.duplicate_threshold
+    possible_threshold = cfg.dedupe.possible_duplicate_threshold
+
+    counts = {"new": 0, "possible_duplicate": 0, "duplicate": 0}
+
+    for record, embedding in zip(eligible, new_embeddings, strict=True):
+        record["embedding"] = embedding
+        record.setdefault("scored_candidates", [])
+
+        job_dict = record.get("job") or {}
+        norm_company = (job_dict.get("company_name") or "").strip().lower()
+        norm_title = (job_dict.get("title") or "").strip().lower()
+        d_hash = record.get("description_hash")
+
+        candidates = repo.find_dedup_candidates(
+            normalized_company_name=norm_company,
+            normalized_title=norm_title,
+            description_hash=d_hash,
+            days_back=90,
+        )
+
+        # Filter out the candidate that IS this job (just discovered under
+        # the same canonical URL or sharing its ATS fingerprint). Without
+        # this, a job re-discovered from a previous run perfectly matches
+        # its own existing row and gets marked as a duplicate of itself.
+        new_canonical = record.get("canonical_url")
+        new_ats_type = job_dict.get("ats_type")
+        new_ats_job_id = job_dict.get("ats_job_id")
+        candidates = [
+            c
+            for c in candidates
+            if c.get("canonical_url") != new_canonical
+            and not (
+                new_ats_type
+                and new_ats_job_id
+                and c.get("ats_type") == new_ats_type
+                and c.get("ats_job_id") == new_ats_job_id
+            )
+        ]
+
+        new_view = _build_scoring_view(record, embedding)
+        best_score = 0.0
+        best_candidate_id: int | None = None
+
+        # Encode candidate descriptions that don't have a stored embedding
+        # so we still get a description score for legacy rows.
+        missing_emb_idx: list[int] = [
+            i
+            for i, c in enumerate(candidates)
+            if not c.get("description_embedding_json") and (c.get("description") or "").strip()
+        ]
+        if missing_emb_idx:
+            backfill_texts = [candidates[i]["description"] or "" for i in missing_emb_idx]
+            backfill_emb = embedding_mod.encode_texts(backfill_texts)
+            for slot, vec in zip(missing_emb_idx, backfill_emb, strict=True):
+                candidates[slot]["description_embedding_json"] = json.dumps(vec)
+
+        for candidate in candidates:
+            cand_view = _candidate_to_scoring_view(candidate)
+            score = score_pair(new_view, cand_view, weights=weights)
+            decision = decide(
+                score.duplicate_score,
+                duplicate_threshold=duplicate_threshold,
+                possible_duplicate_threshold=possible_threshold,
+            )
+            record["scored_candidates"].append(
+                {
+                    "candidate_job_id": candidate["id"],
+                    "duplicate_score": score.duplicate_score,
+                    "company_score": score.company_score,
+                    "title_score": score.title_score,
+                    "description_score": score.description_score,
+                    "location_score": score.location_score,
+                    "skills_score": score.skills_score,
+                    "decision": decision,
+                }
+            )
+            if score.duplicate_score > best_score:
+                best_score = score.duplicate_score
+                best_candidate_id = candidate["id"]
+
+        final_decision = decide(
+            best_score,
+            duplicate_threshold=duplicate_threshold,
+            possible_duplicate_threshold=possible_threshold,
+        )
+        record["duplicate_status"] = final_decision
+        record["duplicate_score"] = best_score
+        record["duplicate_of_job_id"] = best_candidate_id if final_decision != "new" else None
+        counts[final_decision] += 1
+
+    _event(
+        state,
+        "dedupe_check_done",
+        (
+            f"new={counts['new']} possible={counts['possible_duplicate']} "
+            f"duplicate={counts['duplicate']}"
+        ),
+    )
     return state
 
 
@@ -371,7 +591,33 @@ def save_jobs_node(state: AgentState) -> AgentState:
     run_id = state.get("run_id")
     saved_ids: list[int] = []
     inserted = updated = needs_review = 0
+    exact_dups = possible_dups = hard_dups = 0
+    duplicate_candidate_rows = 0
+
     for record in extracted:
+        # Phase-4 layer 1: exact-duplicate short-circuit. Don't insert a
+        # new jobs row — bump the existing row's last_seen_at and append a
+        # job_sources audit entry.
+        exact_dup_id = record.get("exact_dup_of_job_id")
+        if exact_dup_id is not None:
+            try:
+                repo.touch_existing_job(
+                    job_id=exact_dup_id,
+                    raw_url=record["url"],
+                    canonical_url=record["canonical_url"],
+                    source_type=record["source_type"],
+                    source_query=record.get("source_query"),
+                    search_run_id=run_id,
+                )
+            except Exception as e:
+                log.warning(
+                    "touch_existing_job failed for %s: %s", record.get("url"), e
+                )
+                continue
+            saved_ids.append(int(exact_dup_id))
+            exact_dups += 1
+            continue
+
         try:
             job = ExtractedJob.model_validate(record["job"])
         except Exception as e:
@@ -386,10 +632,16 @@ def save_jobs_node(state: AgentState) -> AgentState:
                 source_query=record.get("source_query"),
                 search_run_id=run_id,
                 needs_review=bool(record.get("needs_review")),
+                description_hash=record.get("description_hash"),
+                description_embedding=record.get("embedding"),
+                duplicate_status=record.get("duplicate_status", "new"),
+                duplicate_of_job_id=record.get("duplicate_of_job_id"),
+                duplicate_score=record.get("duplicate_score"),
             )
         except Exception as e:
             log.warning("upsert failed for %s: %s", record.get("url"), e)
             continue
+
         saved_ids.append(result.job_id)
         if result.inserted:
             inserted += 1
@@ -397,12 +649,44 @@ def save_jobs_node(state: AgentState) -> AgentState:
             updated += 1
         if record.get("needs_review"):
             needs_review += 1
+        if record.get("duplicate_status") == "duplicate":
+            hard_dups += 1
+        elif record.get("duplicate_status") == "possible_duplicate":
+            possible_dups += 1
+
+        # Persist per-pair scores for any candidate that scored above a
+        # noise floor. Keeps the duplicate_candidates table small while
+        # capturing enough audit data for the review dashboard.
+        for cand in record.get("scored_candidates", []) or []:
+            if cand["duplicate_score"] < 0.5:
+                continue
+            try:
+                repo.persist_duplicate_candidate(
+                    job_id=result.job_id,
+                    candidate_job_id=cand["candidate_job_id"],
+                    duplicate_score=cand["duplicate_score"],
+                    company_score=cand["company_score"],
+                    title_score=cand["title_score"],
+                    description_score=cand["description_score"],
+                    location_score=cand["location_score"],
+                    skills_score=cand["skills_score"],
+                    decision=cand["decision"],
+                )
+                duplicate_candidate_rows += 1
+            except Exception as e:
+                log.warning("persist_duplicate_candidate failed: %s", e)
 
     state["saved_jobs"] = saved_ids
     _event(
         state,
         "save_jobs_done",
-        f"{inserted} inserted / {updated} updated / {needs_review} flagged for review",
+        (
+            f"{inserted} inserted / {updated} updated / "
+            f"{exact_dups} exact-dup'd / "
+            f"{hard_dups} duplicate / {possible_dups} possible / "
+            f"{duplicate_candidate_rows} candidate-rows / "
+            f"{needs_review} flagged for review"
+        ),
     )
     return state
 
