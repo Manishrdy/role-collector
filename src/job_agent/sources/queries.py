@@ -94,12 +94,17 @@ def generate_ats_queries(
     cap = max_queries if max_queries is not None else cfg.search.max_queries_per_run
     out: list[PlannedQuery] = []
 
+    # Iteration order is tw -> role -> location -> domain -> qualifier.
+    # Keeping `location` outside `domain` is intentional: a small `max_queries`
+    # budget then exercises every ATS host once before cycling through
+    # locations on the first host. Phase-3 smokes need this to surface
+    # Greenhouse / Lever / SmartRecruiters URLs alongside Ashby.
     for tw in time_windows:
         for role in roles:
-            for domain in domains:
-                qualifiers = _ATS_QUALIFIERS.get(domain, [""])
-                for qualifier in qualifiers:
-                    for location in locations:
+            for location in locations:
+                for domain in domains:
+                    qualifiers = _ATS_QUALIFIERS.get(domain, [""])
+                    for qualifier in qualifiers:
                         if len(out) >= cap:
                             return out
                         q = _build_query(domain, role, location, qualifier)
@@ -116,4 +121,67 @@ def generate_ats_queries(
                             )
                         )
 
+    return out
+
+
+# Broad-coverage Google query templates. These don't target a specific ATS
+# host -- they use Google's wildcard subdomain matching to surface postings
+# from ATS deployments we haven't named (incl. white-label Cornerstone /
+# SAP careers pages). They also force the JSON-LD / DOM / LLM fallback
+# chain to do real work in production.
+_BROAD_QUERY_TEMPLATES: tuple[tuple[str, str, bool], ...] = (
+    # (template, label, needs_location)
+    ('"{role}" site:talent.* {loc}', "broad_talent", True),
+    ('"{role}" site:jobs.* remote', "broad_jobs", False),
+    (
+        '"{role}" (site:careers.* OR site:*/careers/* OR site:*/career/*) remote',
+        "broad_careers",
+        False,
+    ),
+)
+
+
+def generate_broad_queries(
+    cfg: AppConfig,
+    *,
+    max_queries: int | None = None,
+) -> list[PlannedQuery]:
+    """Generate broad-coverage Google queries (no fixed target_domain).
+
+    Templates surface URLs from any ATS Google indexes — including the long
+    tail of Cornerstone / SAP / Personio / Recruitee deployments we don't
+    have parsers for. They land in the candidate pool with ats_type set to
+    ``unknown`` and ``target_domain=""`` (the search engine treats empty
+    target_domain as "no host filter").
+    """
+    if not cfg.sources.ats_google_search.enabled:
+        return []
+    cap = max_queries if max_queries is not None else cfg.search.max_queries_per_run
+    out: list[PlannedQuery] = []
+    time_windows: list[TimeWindow] = [tw for tw in cfg.search.time_windows]  # type: ignore[misc]
+    locations = cfg.search.locations or [""]
+
+    for tw in time_windows:
+        for role in cfg.search.roles:
+            for tmpl, label, needs_loc in _BROAD_QUERY_TEMPLATES:
+                loc_iter: list[str] = locations if needs_loc else [""]
+                for loc in loc_iter:
+                    if len(out) >= cap:
+                        return out
+                    formatted_loc = f'"{loc}"' if loc else ""
+                    query = tmpl.format(role=role, loc=formatted_loc).strip()
+                    # Collapse double spaces from optional ``{loc}`` substitution.
+                    query = " ".join(query.split())
+                    out.append(
+                        PlannedQuery(
+                            query=query,
+                            time_window=tw,
+                            source_type="ats_google_search_broad",
+                            target_domain="",
+                            ats_type="unknown",
+                            role=role,
+                            location=loc or None,
+                            tags=(label, f"window:{tw}"),
+                        )
+                    )
     return out

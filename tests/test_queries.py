@@ -5,6 +5,7 @@ from job_agent.sources.queries import (
     PlannedQuery,
     domain_to_ats_type,
     generate_ats_queries,
+    generate_broad_queries,
 )
 
 
@@ -126,6 +127,58 @@ def test_iteration_order_time_window_then_role_then_domain() -> None:
     assert [q.time_window for q in queries[4:]] == ["past_48h"] * 4
     assert [q.role for q in queries[:2]] == ["a", "a"]
     assert [q.role for q in queries[2:4]] == ["b", "b"]
+
+
+def test_small_max_queries_exercises_every_domain_once() -> None:
+    """Reordered cartesian: a budget equal to the domain count must hit each ATS."""
+    domains = [
+        "jobs.ashbyhq.com",
+        "jobs.lever.co",
+        "boards.greenhouse.io",
+        "jobs.smartrecruiters.com",
+    ]
+    cfg = _make_cfg(
+        roles=["software engineer"],
+        locations=["remote", "United States"],
+        domains=domains,
+        time_windows=["past_24h"],
+    )
+    queries = generate_ats_queries(cfg, max_queries=len(domains))
+    targeted = [q.target_domain for q in queries]
+    assert set(targeted) == set(domains)
+
+
+def test_broad_queries_substitute_role_and_location() -> None:
+    cfg = _make_cfg(
+        roles=["software engineer"],
+        locations=["remote", "San Francisco"],
+        domains=["jobs.ashbyhq.com"],
+        time_windows=["past_24h"],
+    )
+    plans = generate_broad_queries(cfg)
+    queries = [p.query for p in plans]
+    # talent.* template needs a location → 2 variants
+    assert '"software engineer" site:talent.* "remote"' in queries
+    assert '"software engineer" site:talent.* "San Francisco"' in queries
+    # jobs.* and careers.* templates are location-less → 1 each
+    assert '"software engineer" site:jobs.* remote' in queries
+    assert any("careers.*" in q for q in queries)
+    # All broad plans carry the broad source_type and unknown ats_type
+    for p in plans:
+        assert p.source_type == "ats_google_search_broad"
+        assert p.ats_type == "unknown"
+        assert p.target_domain == ""
+
+
+def test_broad_queries_disabled_when_source_disabled() -> None:
+    cfg = _make_cfg(
+        roles=["software engineer"],
+        locations=["remote"],
+        domains=["jobs.ashbyhq.com"],
+        time_windows=["past_24h"],
+        enabled=False,
+    )
+    assert generate_broad_queries(cfg) == []
 
 
 def test_planned_query_is_hashable_and_frozen() -> None:

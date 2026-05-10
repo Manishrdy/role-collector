@@ -58,12 +58,43 @@ def create_search_run_node(state: AgentState) -> AgentState:
     return state
 
 
+def _build_search_plans(
+    cfg: Any, max_queries: int | None
+) -> list[q_mod.PlannedQuery]:
+    """Combine host-targeted ATS queries with broad-coverage templates.
+
+    Reserves ~1/4 of the budget for broad queries (min 1 slot when the cap
+    is at least 2) so they never get starved by the much-larger ATS
+    cartesian. Broad templates surface URLs from ATS hosts we haven't
+    named (Cornerstone, SAP, Personio, etc.) and exercise the JSON-LD /
+    DOM / LLM fallback chain in production.
+    """
+    if max_queries is None:
+        return [
+            *q_mod.generate_ats_queries(cfg),
+            *q_mod.generate_broad_queries(cfg),
+        ]
+
+    if max_queries <= 1:
+        # Tiny budget: don't bother reserving for broad — ATS is more reliable.
+        return q_mod.generate_ats_queries(cfg, max_queries=max_queries)
+
+    broad_cap = max(1, max_queries // 4)
+    ats_cap = max_queries - broad_cap
+    ats_plans = q_mod.generate_ats_queries(cfg, max_queries=ats_cap)
+    # If the configured ATS cartesian was smaller than our share, hand the
+    # leftover slots back to broad so the cap is fully utilised.
+    actual_broad_cap = max_queries - len(ats_plans)
+    broad_plans = q_mod.generate_broad_queries(cfg, max_queries=actual_broad_cap)
+    return [*ats_plans, *broad_plans]
+
+
 def generate_search_plan_node(state: AgentState) -> AgentState:
-    """Build the deterministic search plan (currently ATS Google queries only)."""
+    """Build the deterministic search plan (host-targeted ATS + broad queries)."""
     cfg = load_config()
     runtime = state.get("runtime", {}) or {}
     max_queries: int | None = runtime.get("max_queries_override")
-    plans = q_mod.generate_ats_queries(cfg, max_queries=max_queries)
+    plans = _build_search_plans(cfg, max_queries)
     state["search_plan"] = [
         {
             "query": p.query,
@@ -76,7 +107,12 @@ def generate_search_plan_node(state: AgentState) -> AgentState:
         }
         for p in plans
     ]
-    _event(state, "plan_generated", f"{len(plans)} ATS queries planned")
+    n_broad = sum(1 for p in plans if p.source_type == "ats_google_search_broad")
+    _event(
+        state,
+        "plan_generated",
+        f"{len(plans)} queries planned ({len(plans) - n_broad} ATS / {n_broad} broad)",
+    )
     return state
 
 
@@ -91,7 +127,7 @@ def run_ats_google_search_node(state: AgentState) -> AgentState:
         _event(state, "ats_google_search", "disabled in config")
         return state
 
-    plans = q_mod.generate_ats_queries(cfg, max_queries=runtime.get("max_queries_override"))
+    plans = _build_search_plans(cfg, runtime.get("max_queries_override"))
     if not plans:
         _event(state, "ats_google_search", "no queries to run")
         return state
