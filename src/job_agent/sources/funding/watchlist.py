@@ -6,20 +6,27 @@ Those URLs are then prepended to `state["candidate_urls"]` so the
 existing Phase-3 fetch / extract / save pipeline picks them up — no new
 fetcher, no new parser.
 
-Enumeration is intentionally generic: fetch the board page, find every
-`<a>` whose href stays on the same ATS host AND is a child path of the
-board URL (more path segments). This handles Greenhouse / Lever / Ashby
-without per-provider logic. Workday is JS-rendered and won't enumerate
-via plain HTTP — that's a known v2 gap, same root cause as the
-Cloudflare-403 resolvers.
+Two-tier enumeration:
 
-Plain HTTP via `requests` for the board fetch. Per-job page fetches stay
-on the existing async Playwright pipeline.
+1. **Provider-specific public APIs (preferred).** Lever and Greenhouse
+   both publish documented JSON endpoints (``api.lever.co`` and
+   ``boards-api.greenhouse.io``). When the board URL matches one of
+   these hosts we use the API — no scraping, no JS rendering, no
+   Cloudflare risk, no captcha. Lever's HTML board specifically
+   *cannot* be enumerated by anchor-walking (listings aren't anchor
+   tags); the API is the only reliable path.
+2. **Generic HTML anchor walk (fallback).** For Ashby, Workday, and
+   unknown providers we fetch the board page and look for child-path
+   anchors. Playwright fallback applies here when the HTML response
+   is blocked / served as a JS shell.
+
+Per-job page fetches stay on the existing async Playwright pipeline.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -34,6 +41,109 @@ _USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/125.0.0.0 Safari/537.36"
 )
+
+
+# ---------------------------------------------------------------------------
+# Provider-specific API enumerators
+#
+# Lever and Greenhouse both publish documented JSON endpoints that return
+# every public posting for a company. We prefer these over HTML scraping
+# because they're stable, captcha-proof, and don't require waiting for JS.
+
+# `jobs.lever.co/<slug>` -> "<slug>"
+_LEVER_SLUG_RE = re.compile(
+    r"^https?://jobs\.lever\.co/([^/?#]+)/?", re.IGNORECASE
+)
+
+# `boards.greenhouse.io/<slug>` or `job-boards.greenhouse.io/<slug>` -> "<slug>"
+_GREENHOUSE_SLUG_RE = re.compile(
+    r"^https?://(?:boards|job-boards)\.greenhouse\.io/([^/?#]+)/?",
+    re.IGNORECASE,
+)
+
+
+def _match_lever_slug(board_url: str) -> str | None:
+    m = _LEVER_SLUG_RE.match(board_url.strip())
+    return m.group(1) if m else None
+
+
+def _match_greenhouse_slug(board_url: str) -> str | None:
+    m = _GREENHOUSE_SLUG_RE.match(board_url.strip())
+    return m.group(1) if m else None
+
+
+def _enumerate_via_lever_api(
+    slug: str,
+    *,
+    session: requests.Session,
+    request_timeout: float,
+    max_jobs: int,
+) -> list[str] | None:
+    """Hit Lever's public postings API. Returns None on transport failure
+    so the caller can fall back to HTML scraping."""
+    url = f"https://api.lever.co/v0/postings/{slug}?mode=json"
+    try:
+        resp = session.get(
+            url,
+            timeout=request_timeout,
+            headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except (requests.RequestException, ValueError) as e:
+        log.info("[watchlist/lever-api] %s failed: %s", url, e)
+        return None
+    if not isinstance(data, list):
+        return None
+    out: list[str] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        hosted = item.get("hostedUrl")
+        if isinstance(hosted, str) and hosted.startswith("https://"):
+            out.append(hosted)
+            if len(out) >= max_jobs:
+                break
+    log.info("[watchlist/lever-api] %d jobs for %s", len(out), slug)
+    return out
+
+
+def _enumerate_via_greenhouse_api(
+    slug: str,
+    *,
+    session: requests.Session,
+    request_timeout: float,
+    max_jobs: int,
+) -> list[str] | None:
+    """Hit Greenhouse's public Job Board API. Returns None on transport failure."""
+    url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"
+    try:
+        resp = session.get(
+            url,
+            timeout=request_timeout,
+            headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except (requests.RequestException, ValueError) as e:
+        log.info("[watchlist/greenhouse-api] %s failed: %s", url, e)
+        return None
+    if not isinstance(data, dict):
+        return None
+    jobs = data.get("jobs")
+    if not isinstance(jobs, list):
+        return None
+    out: list[str] = []
+    for item in jobs:
+        if not isinstance(item, dict):
+            continue
+        absolute = item.get("absolute_url")
+        if isinstance(absolute, str) and absolute.startswith("https://"):
+            out.append(absolute)
+            if len(out) >= max_jobs:
+                break
+    log.info("[watchlist/greenhouse-api] %d jobs for %s", len(out), slug)
+    return out
 
 
 def _path_segments(url: str) -> list[str]:
@@ -101,13 +211,40 @@ def fetch_and_enumerate(
     max_jobs: int = 100,
     fallback: FetchFallback | None = None,
 ) -> list[str]:
-    """Fetch a board URL and enumerate. Returns [] on network failure.
+    """Enumerate a board's individual job-posting URLs.
 
-    When ``fallback`` is supplied, blocked / empty / JS-shell responses
-    escalate to Playwright — which is how Lever / Ashby / Workday boards
-    actually yield jobs (they render listings client-side).
+    Lever and Greenhouse use their documented public JSON APIs first
+    (faster, more reliable, no scraping). Other providers fall back to
+    the HTML anchor walk, with Playwright escalation on 403 / JS-shell
+    responses when ``fallback`` is supplied.
+
+    Returns ``[]`` on every kind of failure — callers don't need to
+    distinguish "no jobs" from "fetch broke."
     """
     sess = session or requests.Session()
+
+    # Provider-specific JSON paths.
+    lever_slug = _match_lever_slug(board_url)
+    if lever_slug:
+        out = _enumerate_via_lever_api(
+            lever_slug, session=sess, request_timeout=request_timeout, max_jobs=max_jobs
+        )
+        if out is not None:
+            return out
+        log.info("[watchlist] lever API failed; not falling back to HTML (would be 0 jobs)")
+        return []
+
+    gh_slug = _match_greenhouse_slug(board_url)
+    if gh_slug:
+        out = _enumerate_via_greenhouse_api(
+            gh_slug, session=sess, request_timeout=request_timeout, max_jobs=max_jobs
+        )
+        if out is not None:
+            return out
+        # Greenhouse HTML boards are real anchor-tag pages — falling back is useful.
+        log.info("[watchlist] greenhouse API failed; falling back to HTML walk")
+
+    # Generic HTML path (Ashby, Workday, unknown providers, GH fallback).
     result = fetch_with_fallback(
         board_url, session=sess, fallback=fallback, request_timeout=request_timeout
     )

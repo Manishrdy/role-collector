@@ -142,6 +142,11 @@ class _FakeResponse:
         if self.status_code >= 400:
             raise requests.HTTPError(f"http {self.status_code}")
 
+    def json(self) -> object:
+        import json
+
+        return json.loads(self.text)
+
 
 @dataclass
 class _FakeSession:
@@ -170,25 +175,26 @@ class _StubFallback:
 
 
 def test_fetch_and_enumerate_escalates_to_fallback_on_403() -> None:
-    """A Lever/Ashby-style 403-or-empty board should still yield jobs when
-    fallback is provided."""
-    sess = _FakeSession(routes={"https://jobs.lever.co/acme": _FakeResponse(status_code=403)})
+    """A non-Lever, non-Greenhouse board that returns 403 should still
+    yield jobs when fallback is provided. (Lever + Greenhouse have their
+    own API paths and don't take the HTML+fallback branch.)"""
+    sess = _FakeSession(routes={"https://jobs.ashbyhq.com/acme": _FakeResponse(status_code=403)})
     fb = _StubFallback(
         html=(
             '<html><body>'
-            '<a href="https://jobs.lever.co/acme/job-1">Job 1</a>'
-            '<a href="https://jobs.lever.co/acme/job-2">Job 2</a>'
+            '<a href="https://jobs.ashbyhq.com/acme/job-1">Job 1</a>'
+            '<a href="https://jobs.ashbyhq.com/acme/job-2">Job 2</a>'
             '</body></html>'
         ),
         status=200,
     )
     urls = fetch_and_enumerate(
-        "https://jobs.lever.co/acme",
+        "https://jobs.ashbyhq.com/acme",
         session=sess,  # type: ignore[arg-type]
         fallback=fb,  # type: ignore[arg-type]
     )
     assert len(urls) == 2
-    assert fb.calls == ["https://jobs.lever.co/acme"]
+    assert fb.calls == ["https://jobs.ashbyhq.com/acme"]
 
 
 def test_fetch_and_enumerate_no_fallback_returns_empty_on_403() -> None:
@@ -200,3 +206,124 @@ def test_fetch_and_enumerate_no_fallback_returns_empty_on_403() -> None:
         fallback=None,
     )
     assert urls == []
+
+
+# ---------------------------------------------------------------------------
+# Provider-specific API enumerators
+
+
+def test_match_lever_slug() -> None:
+    from job_agent.sources.funding.watchlist import _match_lever_slug
+
+    assert _match_lever_slug("https://jobs.lever.co/acme") == "acme"
+    assert _match_lever_slug("https://jobs.lever.co/Acme-Corp/") == "Acme-Corp"
+    assert _match_lever_slug("https://jobs.lever.co/acme?from=x") == "acme"
+    assert _match_lever_slug("https://boards.greenhouse.io/acme") is None
+    assert _match_lever_slug("https://acme.io/careers") is None
+
+
+def test_match_greenhouse_slug() -> None:
+    from job_agent.sources.funding.watchlist import _match_greenhouse_slug
+
+    assert _match_greenhouse_slug("https://boards.greenhouse.io/acme") == "acme"
+    assert _match_greenhouse_slug("https://job-boards.greenhouse.io/acme") == "acme"
+    assert _match_greenhouse_slug("https://jobs.lever.co/acme") is None
+
+
+def test_lever_api_path_used_for_lever_urls() -> None:
+    """`fetch_and_enumerate` against a Lever board hits the API, not HTML."""
+    sess = _FakeSession(
+        routes={
+            "https://api.lever.co/v0/postings/acme?mode=json": _FakeResponse(
+                status_code=200,
+                text=(
+                    '[{"id":"abc","text":"Senior Engineer",'
+                    '"hostedUrl":"https://jobs.lever.co/acme/abc"},'
+                    '{"id":"def","text":"Staff Engineer",'
+                    '"hostedUrl":"https://jobs.lever.co/acme/def"}]'
+                ),
+            ),
+        }
+    )
+    urls = fetch_and_enumerate("https://jobs.lever.co/acme", session=sess)  # type: ignore[arg-type]
+    assert urls == ["https://jobs.lever.co/acme/abc", "https://jobs.lever.co/acme/def"]
+
+
+def test_greenhouse_api_path_used_for_greenhouse_urls() -> None:
+    sess = _FakeSession(
+        routes={
+            "https://boards-api.greenhouse.io/v1/boards/acme/jobs": _FakeResponse(
+                status_code=200,
+                text=(
+                    '{"jobs":['
+                    '{"id":1,"absolute_url":"https://boards.greenhouse.io/acme/jobs/1"},'
+                    '{"id":2,"absolute_url":"https://boards.greenhouse.io/acme/jobs/2"}'
+                    "]}"
+                ),
+            ),
+        }
+    )
+    urls = fetch_and_enumerate(
+        "https://boards.greenhouse.io/acme",
+        session=sess,  # type: ignore[arg-type]
+    )
+    assert urls == [
+        "https://boards.greenhouse.io/acme/jobs/1",
+        "https://boards.greenhouse.io/acme/jobs/2",
+    ]
+
+
+def test_lever_api_failure_returns_empty_no_html_fallback() -> None:
+    """Lever HTML can't be enumerated by anchor-walking, so an API failure
+    must NOT fall back to HTML (which would always return 0)."""
+    sess = _FakeSession(
+        routes={
+            "https://api.lever.co/v0/postings/acme?mode=json": _FakeResponse(
+                status_code=500
+            ),
+        }
+    )
+    urls = fetch_and_enumerate("https://jobs.lever.co/acme", session=sess)  # type: ignore[arg-type]
+    assert urls == []
+
+
+def test_greenhouse_api_failure_falls_back_to_html() -> None:
+    """Greenhouse HTML boards are anchor-tag pages, so an API miss SHOULD
+    fall back to the generic HTML walker."""
+    html_body = (
+        '<html><body>'
+        '<a href="/acme/jobs/12345">Engineer</a>'
+        '<a href="/acme/jobs/67890">Designer</a>'
+        '</body></html>'
+    )
+    sess = _FakeSession(
+        routes={
+            "https://boards-api.greenhouse.io/v1/boards/acme/jobs": _FakeResponse(
+                status_code=500
+            ),
+            "https://boards.greenhouse.io/acme": _FakeResponse(
+                status_code=200, text=html_body
+            ),
+        }
+    )
+    urls = fetch_and_enumerate(
+        "https://boards.greenhouse.io/acme",
+        session=sess,  # type: ignore[arg-type]
+    )
+    assert len(urls) == 2
+    assert "https://boards.greenhouse.io/acme/jobs/12345" in urls
+
+
+def test_lever_api_respects_max_jobs() -> None:
+    items = ",".join(
+        f'{{"id":"{i}","hostedUrl":"https://jobs.lever.co/acme/{i}"}}' for i in range(50)
+    )
+    sess = _FakeSession(
+        routes={
+            "https://api.lever.co/v0/postings/acme?mode=json": _FakeResponse(
+                status_code=200, text=f"[{items}]"
+            ),
+        }
+    )
+    urls = fetch_and_enumerate("https://jobs.lever.co/acme", session=sess, max_jobs=5)  # type: ignore[arg-type]
+    assert len(urls) == 5
