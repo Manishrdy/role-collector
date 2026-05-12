@@ -31,16 +31,31 @@ def test_returns_empty_when_linkedin_disabled() -> None:
 
 
 def test_generates_one_query_per_phrase() -> None:
-    plans = generate_linkedin_queries(_make_cfg(linkedin_enabled=True))
-    assert len(plans) == 4
+    plans = generate_linkedin_queries(
+        _make_cfg(linkedin_enabled=True), max_queries=20
+    )
+    assert len(plans) == 9
 
 
 def test_queries_target_linkedin_posts_path() -> None:
-    plans = generate_linkedin_queries(_make_cfg(linkedin_enabled=True))
+    plans = generate_linkedin_queries(
+        _make_cfg(linkedin_enabled=True), max_queries=20
+    )
     for p in plans:
         assert "site:linkedin.com/posts/" in p.query
         assert p.source_type == "linkedin_public_search"
         assert p.target_domain == "linkedin.com"
+
+
+def test_queries_include_hiring_hashtags_and_we_are_hiring() -> None:
+    plans = generate_linkedin_queries(
+        _make_cfg(linkedin_enabled=True), max_queries=20
+    )
+    labels = {p.tags[0] for p in plans}
+    assert "we_are_hiring" in labels
+    assert "hiring_hashtag" in labels
+    assert "nowhiring_hashtag" in labels
+    assert any("#hiring" in p.query for p in plans)
 
 
 def test_max_queries_cap() -> None:
@@ -51,6 +66,6 @@ def test_max_queries_cap() -> None:
 def test_multiple_time_windows_multiply_queries() -> None:
     plans = generate_linkedin_queries(
         _make_cfg(linkedin_enabled=True, time_windows=["past_24h", "past_week"]),
-        max_queries=20,
+        max_queries=40,
     )
-    assert len(plans) == 8  # 4 phrases x 2 windows
+    assert len(plans) == 18  # 9 phrases x 2 windows

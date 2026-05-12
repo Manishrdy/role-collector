@@ -55,6 +55,28 @@ def _iso(dt: datetime) -> str:
     return dt.isoformat(timespec="seconds")
 
 
+# Maps the ``source_type`` field that source modules tag candidate URLs
+# with to the canonical scheduler ``source_name`` used by the agent
+# loop. Without this mapping, sub-variants like ``ats_google_search_broad``
+# and ``funding_google_search`` are not aggregated into the parent
+# source's stats and the priority scorer is starved of data.
+_SOURCE_TYPE_TO_SCHEDULER_NAME: dict[str, str] = {
+    "ats_api_discovery": "ats_api_discovery",
+    "ats_google_search": "ats_google_search",
+    "ats_google_search_broad": "ats_google_search",
+    "funding_discovery": "funding_discovery",
+    "funding_google_search": "funding_discovery",
+    "watchlist": "watchlist",
+    "linkedin_public_search": "linkedin_public_search",
+}
+
+
+def _normalize_source_type(source_type: str | None) -> str | None:
+    if not source_type:
+        return None
+    return _SOURCE_TYPE_TO_SCHEDULER_NAME.get(source_type, source_type)
+
+
 def _sleep_seconds(cfg: AppConfig, *, fatal: bool = False) -> float:
     if fatal:
         return max(1.0, cfg.agent_loop.fatal_retry_sleep_minutes * 60.0)
@@ -144,6 +166,11 @@ def run_worker_forever(*, once: bool = False, dry_run: bool = False) -> None:
                 consecutive_failures += 1
             if once:
                 return
+            # Exponential backoff on consecutive failures, capped at 4x.
+            # Note: ``result.sleep_seconds`` is already the fatal short
+            # interval (``fatal_retry_sleep_minutes``) when the cycle
+            # failed, so the multiplier stacks on top of that.
+            # successes=15min,  2 failures=30min, 3=60min, 4+=60min cap.
             multiplier = 1.0 if consecutive_failures <= 1 else float(min(4, 2 ** (consecutive_failures - 1)))
             sleep_seconds = result.sleep_seconds * multiplier
             log.info(
@@ -186,11 +213,9 @@ def run_one_cycle(*, cfg: AppConfig | None = None, dry_run: bool = False) -> Wor
             search_run_id=run_id,
             config_snapshot=cfg.model_dump(exclude={"langfuse_secret_key", "langfuse_public_key"}),
         )
-        batch_id = repo.create_job_batch(
-            search_run_id=run_id,
-            agent_cycle_id=cycle_id,
-            metadata={"batch_min_jobs": cfg.agent_loop.batch_min_jobs, "batch_max_jobs": cfg.agent_loop.batch_max_jobs},
-        )
+        # The batch row is created lazily on the first save (see
+        # save_jobs_node._ensure_batch). Cycles that produce zero
+        # extracted jobs no longer leave behind an empty batch.
         trace = tracer.trace(
             name="job_agent_worker_cycle",
             metadata={
@@ -209,8 +234,13 @@ def run_one_cycle(*, cfg: AppConfig | None = None, dry_run: bool = False) -> Wor
             "run_id": run_id,
             "runtime": {
                 "dry_run": dry_run,
-                "batch_id": batch_id,
+                "batch_id": None,
                 "batch_current_count": 0,
+                "batch_metadata": {
+                    "batch_min_jobs": cfg.agent_loop.batch_min_jobs,
+                    "batch_max_jobs": cfg.agent_loop.batch_max_jobs,
+                    "created_by": "worker",
+                },
                 "agent_cycle_id": cycle_id,
                 "max_queries_override": cfg.agent_loop.max_google_queries_per_cycle,
             },
@@ -440,22 +470,67 @@ def _build_summary(final: AgentState, *, status: str, error: str | None) -> dict
 
 
 def _update_source_stats(final: AgentState, *, status: str) -> None:
+    """Record per-source outcomes for the cycle.
+
+    Only updates stats for sources that were ``eligible`` in the
+    execution plan. Sources that were skipped (disabled, cadence,
+    backoff) are already stamped by the worker before this runs, and
+    sources that were never scheduled at all must not have their
+    ``runs_total`` incremented — that would skew priority scoring.
+    """
+    runtime = final.get("runtime", {}) or {}
+    plan = runtime.get("source_execution_plan", []) if isinstance(runtime, dict) else []
+    if not isinstance(plan, list):
+        plan = []
+
+    eligible_sources: list[str] = []
+    for entry in plan:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("status") != "eligible":
+            continue
+        name = entry.get("source_name")
+        if isinstance(name, str) and name:
+            eligible_sources.append(name)
+    if not eligible_sources:
+        return
+
+    # Don't overwrite the failed/backoff status that
+    # _persist_source_backoff_signals already wrote for blocked sources.
+    signals = runtime.get("source_signals", {}) if isinstance(runtime, dict) else {}
+    blocked_sources: set[str] = set()
+    if isinstance(signals, dict):
+        for src_name, src_signal in signals.items():
+            if isinstance(src_signal, dict) and src_signal.get("blocked"):
+                blocked_sources.add(str(src_name))
+
     candidates = final.get("candidate_urls", []) or []
-    saved = len(final.get("saved_jobs", []) or [])
     by_source: dict[str, int] = {}
     for c in candidates:
-        source = str(c.get("source_type") or c.get("engine") or "unknown")
-        by_source[source] = by_source.get(source, 0) + 1
-    if not by_source:
-        for source in ("ats_api_discovery", "ats_google_search", "funding_discovery", "watchlist", "linkedin_public_search"):
-            repo.update_source_stats(source_name=source, status="skipped", metadata={"reason": "no candidates"})
-        return
-    for source, count in by_source.items():
+        raw = c.get("source_type") or c.get("engine")
+        canonical = _normalize_source_type(str(raw) if raw else None)
+        if canonical is None:
+            continue
+        by_source[canonical] = by_source.get(canonical, 0) + 1
+
+    saved = len(final.get("saved_jobs", []) or [])
+    total_candidates = sum(by_source.values())
+    jobs_eligible_sources = {"ats_api_discovery", "ats_google_search", "watchlist", "funding_discovery"}
+
+    for source in eligible_sources:
+        if source in blocked_sources:
+            continue
+        count = by_source.get(source, 0)
+        if source in jobs_eligible_sources and total_candidates > 0:
+            jobs_attributed = round(saved * (count / total_candidates))
+        else:
+            jobs_attributed = 0
         repo.update_source_stats(
             source_name=source,
             status=status,
             candidates=count,
-            jobs_saved=saved if source in {"ats_api_discovery", "ats_google_search", "watchlist"} else 0,
+            jobs_saved=jobs_attributed,
+            metadata={"reason": "no_candidates"} if count == 0 else None,
         )
 
 

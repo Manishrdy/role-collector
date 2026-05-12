@@ -183,6 +183,91 @@ def test_captcha_stops_early(
     assert stats.posts_inserted == 0
 
 
+def test_llm_role_enrichment_overrides_role_when_regex_missing(
+    isolated_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When role_llm_enabled and regex missed the role, the LLM result lands."""
+    migrate()
+
+    cfg = AppConfig.model_validate(
+        {
+            "search": {
+                "time_windows": ["past_24h"],
+                "roles": ["software engineer"],
+                "locations": [],
+                "max_queries_per_run": 5,
+                "max_results_per_query": 5,
+            },
+            "sources": {
+                "ats_google_search": {"enabled": True, "domains": []},
+                "funding_discovery": {"enabled": False},
+                "linkedin_public_search": {
+                    "enabled": True,
+                    "login_allowed": False,
+                    "min_delay_per_post_seconds": 0.01,
+                    "max_delay_per_post_seconds": 0.02,
+                    "max_results_per_query": 5,
+                    "role_llm_enabled": True,
+                },
+            },
+        }
+    )
+
+    def fake_run_ats(**kwargs: object) -> tuple[list, OrchestrationStats]:
+        return ([_make_candidate("https://linkedin.com/posts/k")], OrchestrationStats())
+
+    def fake_fetch_posts(urls, **kwargs):  # type: ignore[no-untyped-def]
+        # Hiring signal triggers (so is_hiring_post=True), but regex
+        # role_at_company pattern doesn't match — detected_role stays None.
+        html = (
+            '<html><head><script type="application/ld+json">'
+            '{"@type":"SocialMediaPosting","articleBody":"#hiring at our team! DM me with your role interest.",'
+            '"author":{"@type":"Person","name":"Kim"}}'
+            "</script></head></html>"
+        )
+        return ([_make_fetched_page(urls[0], html)], LinkedInFetchStats(urls_attempted=1, urls_ok=1))
+
+    class FakeClassifierClient:
+        def __init__(self, _cfg: object) -> None:
+            pass
+
+        def classify_linkedin_post(self, **kwargs: object) -> object:
+            from job_agent.agent.schemas import LinkedInPostIntelligence
+
+            return LinkedInPostIntelligence(
+                detected_role="Senior Backend Engineer",
+                role_family="backend",
+                role_match_status="exact_match",
+                level="senior",
+                level_confidence=0.85,
+                company_hint="Stripes Co",
+                confidence=0.8,
+            )
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(orchestrator, "run_ats_search", fake_run_ats)
+    monkeypatch.setattr(orchestrator, "fetch_linkedin_posts", fake_fetch_posts)
+    monkeypatch.setattr(orchestrator, "OllamaClassifierClient", FakeClassifierClient)
+
+    stats = orchestrator.discover_linkedin_posts(cfg)
+    assert stats.role_llm_calls == 1
+    assert stats.role_llm_valid == 1
+    assert stats.posts_inserted == 1
+
+    import sqlite3
+
+    with sqlite3.connect(repo.load_config().storage.sqlite_path) as conn:
+        row = conn.execute(
+            "SELECT detected_role, role_family, level, extraction_source FROM linkedin_posts"
+        ).fetchone()
+    assert row[0] == "Senior Backend Engineer"
+    assert row[1] == "backend"
+    assert row[2] == "senior"
+    assert row[3] == "llm"
+
+
 def test_no_linkedin_urls_in_results_skips_fetch(
     isolated_db: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

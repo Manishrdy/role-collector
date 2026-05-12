@@ -9,7 +9,13 @@ import pytest
 import job_agent.agent.worker as worker_mod
 from job_agent.agent.intelligence import classify_job, normalize_location
 from job_agent.agent.scheduler import SourceScheduleDecision
-from job_agent.agent.worker import _lock_path, _persist_source_backoff_signals, run_one_cycle
+from job_agent.agent.worker import (
+    _lock_path,
+    _normalize_source_type,
+    _persist_source_backoff_signals,
+    _update_source_stats,
+    run_one_cycle,
+)
 from job_agent.config import load_config
 from job_agent.db import repo
 from job_agent.db.migrate import migrate
@@ -59,7 +65,8 @@ def test_worker_dry_run_creates_cycle_batch_and_tool_calls(isolated_db: Path) ->
         tool_calls = conn.execute("SELECT COUNT(*) FROM agent_tool_calls").fetchone()[0]
         memory = conn.execute("SELECT COUNT(*) FROM agent_memory").fetchone()[0]
     assert cycles == 1
-    assert batches == 1
+    # Lazy batch creation: a dry-run cycle that saves no jobs creates no batch.
+    assert batches == 0
     assert tool_calls >= 1
     assert memory == 1
 
@@ -85,6 +92,71 @@ def test_worker_cycle_timeout_marks_failed(isolated_db: Path) -> None:
     result = run_one_cycle(cfg=cfg, dry_run=True)
     assert result.status == "failed"
     assert "max_cycle_runtime_minutes" in str(result.summary.get("error") or "")
+
+
+def test_source_type_normalization() -> None:
+    assert _normalize_source_type("ats_google_search_broad") == "ats_google_search"
+    assert _normalize_source_type("funding_google_search") == "funding_discovery"
+    assert _normalize_source_type("ats_api_discovery") == "ats_api_discovery"
+    assert _normalize_source_type("watchlist") == "watchlist"
+    assert _normalize_source_type(None) is None
+    # Unknown source_types pass through unchanged.
+    assert _normalize_source_type("mystery") == "mystery"
+
+
+def test_update_source_stats_only_touches_eligible_sources(isolated_db: Path) -> None:
+    del isolated_db
+    migrate()
+    final = {
+        "runtime": {
+            "source_execution_plan": [
+                {"source_name": "ats_api_discovery", "status": "eligible"},
+                {"source_name": "ats_google_search", "status": "eligible"},
+                {"source_name": "linkedin_public_search", "status": "skipped"},
+            ],
+        },
+        "candidate_urls": [
+            {"source_type": "ats_google_search_broad", "url": "u1"},
+            {"source_type": "ats_google_search", "url": "u2"},
+        ],
+        "saved_jobs": [1, 2],
+    }
+    _update_source_stats(final, status="succeeded")
+    stats = {row["source_name"]: row for row in repo.list_source_stats()}
+    # Broad variant rolled up under ats_google_search.
+    assert stats["ats_google_search"]["candidates_total"] == 2
+    # Eligible source with zero candidates is still stamped (status=succeeded).
+    assert stats["ats_api_discovery"]["candidates_total"] == 0
+    assert stats["ats_api_discovery"]["last_status"] == "succeeded"
+    # Skipped/never-eligible sources are NOT touched.
+    assert "linkedin_public_search" not in stats
+
+
+def test_update_source_stats_skips_blocked_sources(isolated_db: Path) -> None:
+    del isolated_db
+    migrate()
+    # Pre-seed: simulate _persist_source_backoff_signals stamping "failed".
+    repo.update_source_stats(
+        source_name="ats_google_search",
+        status="failed",
+        backoff_until="2099-01-01T00:00:00+00:00",
+    )
+    final = {
+        "runtime": {
+            "source_execution_plan": [
+                {"source_name": "ats_google_search", "status": "eligible"},
+            ],
+            "source_signals": {
+                "ats_google_search": {"blocked": True},
+            },
+        },
+        "candidate_urls": [],
+        "saved_jobs": [],
+    }
+    _update_source_stats(final, status="succeeded")
+    stats = {row["source_name"]: row for row in repo.list_source_stats()}
+    # The blocked source's failed status is preserved, not overwritten.
+    assert stats["ats_google_search"]["last_status"] == "failed"
 
 
 def test_worker_persists_source_backoff_signals(isolated_db: Path) -> None:

@@ -99,6 +99,15 @@ class LinkedInPublicSearchSection(BaseModel):
     max_delay_per_post_seconds: float = 60.0
     max_results_per_query: int = 5
     stop_on_captcha: bool = True
+    # When True, run the Ollama LinkedIn post classifier as a fallback
+    # whenever regex extraction missed the role or returned low
+    # confidence. Deterministic regex output is always kept on LLM
+    # failure or invalid JSON.
+    role_llm_enabled: bool = False
+    # Trigger thresholds for the LLM fallback. The classifier only runs
+    # if regex confidence is below ``role_llm_min_confidence`` OR if
+    # detected_role is missing entirely.
+    role_llm_min_confidence: float = 0.6
 
 
 class SourcesSection(BaseModel):

@@ -30,6 +30,23 @@ class JobIntelligence(BaseModel):
     location: LocationNormalization = Field(default_factory=LocationNormalization)
 
 
+class LinkedInPostIntelligence(BaseModel):
+    """Bounded LLM extraction for hiring-intent LinkedIn posts.
+
+    Used when regex extraction is incomplete or uncertain; the LLM is
+    asked to identify role, role_family, level, and a company hint
+    from short post text only.
+    """
+
+    detected_role: str | None = None
+    role_family: str = "unknown"
+    role_match_status: RoleMatchStatus = "unknown"
+    level: Level = "unknown"
+    level_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    company_hint: str | None = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class ToolInput(BaseModel):
     dry_run: bool = False
     runtime: dict[str, Any] = Field(default_factory=dict)

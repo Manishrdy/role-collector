@@ -835,10 +835,13 @@ def save_jobs_node(state: AgentState) -> AgentState:
     def _ensure_batch() -> int | None:
         nonlocal active_batch_id, batch_current_count
         if active_batch_id is None and run_id is not None:
+            metadata = runtime.get("batch_metadata") if isinstance(runtime, dict) else None
+            if not isinstance(metadata, dict):
+                metadata = {"created_by": "save_jobs_node"}
             active_batch_id = repo.create_job_batch(
                 search_run_id=run_id,
                 agent_cycle_id=agent_cycle_id,
-                metadata={"created_by": "save_jobs_node"},
+                metadata=metadata,
             )
             batch_current_count = 0
         return int(active_batch_id) if active_batch_id is not None else None

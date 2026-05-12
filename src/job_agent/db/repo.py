@@ -937,6 +937,11 @@ def upsert_linkedin_post(
     author_url: str | None = None,
     company_name: str | None = None,
     detected_role: str | None = None,
+    role_family: str | None = None,
+    role_match_status: str | None = None,
+    level: str | None = None,
+    level_confidence: float | None = None,
+    extraction_source: str | None = None,
     confidence: float | None = None,
     source_query: str | None = None,
     company_id: int | None = None,
@@ -966,9 +971,10 @@ def upsert_linkedin_post(
             """
             INSERT INTO linkedin_posts
                 (company_id, post_url, canonical_url, author_name, author_url, company_name,
-                 normalized_company_name, detected_role, post_text, source_query,
+                 normalized_company_name, detected_role, role_family, role_match_status,
+                 level, level_confidence, extraction_source, post_text, source_query,
                  confidence, found_at, processed_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new')
             """,
             (
                 company_id,
@@ -979,6 +985,11 @@ def upsert_linkedin_post(
                 company_name,
                 normalized_company,
                 detected_role,
+                role_family,
+                role_match_status,
+                level,
+                level_confidence,
+                extraction_source,
                 post_text,
                 source_query,
                 confidence,

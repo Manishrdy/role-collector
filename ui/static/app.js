@@ -394,6 +394,9 @@ async function renderDiscovery() {
           <td>${escapeHtml(l.author_name || "—")}</td>
           <td>${escapeHtml(l.company_name || "—")}</td>
           <td>${escapeHtml(l.detected_role || "—")}</td>
+          <td>${escapeHtml(l.role_family || "—")}</td>
+          <td>${escapeHtml(l.level || "—")}</td>
+          <td>${escapeHtml(l.extraction_source || "regex")}</td>
           <td>${l.confidence != null ? Number(l.confidence).toFixed(2) : "—"}</td>
           <td>${escapeHtml(l.processed_status || "—")}</td>
           <td><a href="${escapeHtml(l.post_url)}" target="_blank" rel="noopener" class="mono">post</a></td>
@@ -401,7 +404,7 @@ async function renderDiscovery() {
         </tr>`
         )
         .join("")
-    : `<tr><td colspan="8" class="empty">No LinkedIn posts yet.</td></tr>`;
+    : `<tr><td colspan="11" class="empty">No LinkedIn posts yet.</td></tr>`;
 
   $("#watchlist-body").innerHTML = data.watchlist.length
     ? data.watchlist

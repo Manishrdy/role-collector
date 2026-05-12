@@ -8,7 +8,11 @@ from typing import Any
 
 import httpx
 
-from job_agent.agent.schemas import CycleReflection, JobIntelligence
+from job_agent.agent.schemas import (
+    CycleReflection,
+    JobIntelligence,
+    LinkedInPostIntelligence,
+)
 from job_agent.config import AppConfig
 from job_agent.extract.schema import ExtractedJob
 
@@ -44,6 +48,39 @@ Return ONLY JSON with this exact schema:
     "confidence": number
   }}
 }}
+"""
+
+_LINKEDIN_POST_TEMPLATE = """Identify the hiring role from this public LinkedIn post.
+
+Configured target roles:
+{roles}
+
+Post text:
+{post_text}
+
+Author hint:
+{author_name}
+
+Regex-extracted company (may be wrong or null):
+{company_hint}
+
+Return ONLY JSON with this exact schema:
+{{
+  "detected_role": string | null,
+  "role_family": string,
+  "role_match_status": "exact_match" | "adjacent" | "irrelevant" | "unknown",
+  "level": "intern" | "entry" | "mid" | "senior" | "staff" | "principal" | "manager" | "unknown",
+  "level_confidence": number,
+  "company_hint": string | null,
+  "confidence": number
+}}
+
+Rules:
+- detected_role: short job title from the post (e.g. "Senior Backend Engineer"). null if the post mentions hiring but no specific role.
+- role_family: one of software, backend, full_stack, ai_ml, devops, qa, manager, design, product, data, security, sales, marketing, ops, unknown.
+- role_match_status: compare detected_role to the configured target roles.
+- company_hint: company doing the hiring if present; null otherwise.
+- confidence: your overall confidence in the extraction.
 """
 
 _REFLECTION_TEMPLATE = """Reflect on this completed worker cycle summary and suggest next focus.
@@ -103,6 +140,29 @@ class OllamaClassifierClient:
         if model.location.remote_type is None:
             model.location.remote_type = job.remote_type
         return model
+
+    def classify_linkedin_post(
+        self,
+        *,
+        post_text: str,
+        author_name: str | None,
+        company_hint: str | None,
+        configured_roles: list[str],
+    ) -> LinkedInPostIntelligence | None:
+        prompt = _LINKEDIN_POST_TEMPLATE.format(
+            roles=json.dumps(configured_roles),
+            post_text=json.dumps((post_text or "")[:3000]),
+            author_name=json.dumps(author_name),
+            company_hint=json.dumps(company_hint),
+        )
+        raw = self._generate_json(prompt)
+        if raw is None:
+            return None
+        try:
+            return LinkedInPostIntelligence.model_validate_json(raw)
+        except Exception as e:
+            log.warning("linkedin post classifier JSON failed validation: %s", e)
+            return None
 
     def reflect_cycle(self, *, summary: dict[str, Any]) -> CycleReflection | None:
         prompt = _REFLECTION_TEMPLATE.format(summary=json.dumps(summary, sort_keys=True))

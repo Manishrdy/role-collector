@@ -14,13 +14,20 @@ from __future__ import annotations
 from job_agent.config import AppConfig
 from job_agent.sources.queries import PlannedQuery, TimeWindow
 
-# 4 hiring-intent phrases. Each is wrapped in quotes so Google does
-# exact-phrase matching, not stemmed expansion.
+# Hiring-intent phrases and hashtags. Exact-phrase strings are wrapped
+# in quotes so Google does exact-phrase matching, not stemmed expansion.
+# Hashtags don't need quoting; Google indexes them as discrete tokens
+# on LinkedIn post pages.
 _HIRING_PHRASES: tuple[tuple[str, str], ...] = (
     ('"we\'re hiring"', "were_hiring"),
+    ('"we are hiring"', "we_are_hiring"),
     ('"open roles"', "open_roles"),
     ('"join our team"', "join_our_team"),
     ('"looking for" engineer', "looking_for_engineer"),
+    ("#hiring", "hiring_hashtag"),
+    ("#nowhiring", "nowhiring_hashtag"),
+    ("#wearehiring", "wearehiring_hashtag"),
+    ("#hiringnow", "hiringnow_hashtag"),
 )
 
 

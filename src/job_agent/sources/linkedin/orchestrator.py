@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from job_agent.agent.classifiers import OllamaClassifierClient
 from job_agent.config import AppConfig
 from job_agent.db import repo
 from job_agent.sources.ats_search import run_ats_search
@@ -35,9 +36,19 @@ class LinkedInStats:
     posts_inserted: int = 0
     posts_existing: int = 0
     companies_seeded: int = 0
+    role_llm_calls: int = 0
+    role_llm_valid: int = 0
+    role_llm_fallbacks: int = 0
     stopped_early: bool = False
     stop_reason: str | None = None
     errors: list[str] = field(default_factory=list)
+
+
+def _should_enrich_with_llm(post: ExtractedLinkedInPost, *, min_conf: float) -> bool:
+    """Trigger the LLM only when regex output is incomplete or low-confidence."""
+    if not post.detected_role:
+        return True
+    return post.extraction_confidence < min_conf
 
 
 def discover_linkedin_posts(
@@ -119,6 +130,55 @@ def discover_linkedin_posts(
         stats.posts_classified_hiring += 1
         extracted.append(post)
 
+    # Stage 3b: optional LLM enrichment for role/level/family.
+    llm_client: OllamaClassifierClient | None = None
+    if cfg.sources.linkedin_public_search.role_llm_enabled and extracted:
+        try:
+            llm_client = OllamaClassifierClient(cfg)
+        except Exception as e:
+            log.exception("[linkedin] failed to init Ollama classifier")
+            stats.errors.append(f"llm_init: {e}")
+            llm_client = None
+    if llm_client is not None:
+        try:
+            enriched: list[ExtractedLinkedInPost] = []
+            min_conf = cfg.sources.linkedin_public_search.role_llm_min_confidence
+            for post in extracted:
+                if not _should_enrich_with_llm(post, min_conf=min_conf):
+                    enriched.append(post)
+                    continue
+                stats.role_llm_calls += 1
+                intel = llm_client.classify_linkedin_post(
+                    post_text=post.post_text,
+                    author_name=post.author_name,
+                    company_hint=post.company_name,
+                    configured_roles=list(cfg.search.roles),
+                )
+                if intel is None:
+                    stats.role_llm_fallbacks += 1
+                    enriched.append(post)
+                    continue
+                stats.role_llm_valid += 1
+                # LLM is allowed to override role / company / level fields,
+                # but the regex hiring-signal classifier and post text stay
+                # authoritative — never flip is_hiring or rewrite post_text.
+                updated = post.model_copy(
+                    update={
+                        "detected_role": intel.detected_role or post.detected_role,
+                        "role_family": intel.role_family or post.role_family,
+                        "role_match_status": intel.role_match_status or post.role_match_status,
+                        "level": intel.level or post.level,
+                        "level_confidence": intel.level_confidence,
+                        "company_name": post.company_name or intel.company_hint,
+                        "extraction_source": "llm",
+                        "extraction_confidence": max(post.extraction_confidence, intel.confidence),
+                    }
+                )
+                enriched.append(updated)
+            extracted = enriched
+        finally:
+            llm_client.close()
+
     # Stage 4: persist + seed companies.
     for post in extracted:
         company_id: int | None = None
@@ -136,6 +196,11 @@ def discover_linkedin_posts(
                 author_url=post.author_url,
                 company_name=post.company_name,
                 detected_role=post.detected_role,
+                role_family=post.role_family,
+                role_match_status=post.role_match_status,
+                level=post.level,
+                level_confidence=post.level_confidence,
+                extraction_source=post.extraction_source,
                 confidence=post.extraction_confidence,
                 source_query="linkedin_public_search",
                 company_id=company_id,
@@ -154,7 +219,7 @@ def discover_linkedin_posts(
 
     log.info(
         "[linkedin] urls=%d ok=%d blocked=%d errored=%d hiring=%d inserted=%d "
-        "seeded_companies=%d stopped_early=%s",
+        "seeded_companies=%d llm_calls=%d/%d stopped_early=%s",
         stats.candidate_urls,
         stats.posts_fetched,
         stats.posts_blocked,
@@ -162,6 +227,8 @@ def discover_linkedin_posts(
         stats.posts_classified_hiring,
         stats.posts_inserted,
         stats.companies_seeded,
+        stats.role_llm_valid,
+        stats.role_llm_calls,
         stats.stopped_early,
     )
     return stats

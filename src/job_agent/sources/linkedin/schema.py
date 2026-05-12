@@ -28,6 +28,10 @@ class ExtractedLinkedInPost(BaseModel):
     author_url: str | None = None
     company_name: str | None = None
     detected_role: str | None = None
+    role_family: str | None = None
+    role_match_status: str | None = None
+    level: str | None = None
+    level_confidence: float | None = None
 
     is_hiring_post: bool = False
     hiring_signals: list[str] = Field(default_factory=list)

@@ -339,8 +339,9 @@ def api_discovery() -> JSONResponse:
         ).fetchall()
         linkedin = conn.execute(
             """
-            SELECT id, author_name, company_name, detected_role, post_url, confidence,
-                   processed_status, found_at
+            SELECT id, author_name, company_name, detected_role, role_family,
+                   role_match_status, level, level_confidence, extraction_source,
+                   post_url, confidence, processed_status, found_at
             FROM linkedin_posts ORDER BY id DESC LIMIT 100
             """
         ).fetchall()
