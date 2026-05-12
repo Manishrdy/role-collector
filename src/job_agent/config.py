@@ -50,6 +50,9 @@ class FundingAggregatorToggles(BaseModel):
 class FundingResolversSection(BaseModel):
     enabled: bool = True
     google_fallback: bool = False  # off by default — costs a nodriver session
+    # Per-URL Playwright escalation when plain requests gets 403'd or served a
+    # JS shell. Pays zero overhead unless a URL actually needs it.
+    playwright_fallback: bool = True
     max_companies_per_run: int = 20
 
 

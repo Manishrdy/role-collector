@@ -6,7 +6,12 @@ across the three main ATS providers we care about.
 
 from __future__ import annotations
 
-from job_agent.sources.funding.watchlist import enumerate_board_html
+from dataclasses import dataclass, field
+
+import requests
+
+from job_agent.sources.funding.resolvers._fetch import FetchResult
+from job_agent.sources.funding.watchlist import enumerate_board_html, fetch_and_enumerate
 
 
 def test_greenhouse_board_extracts_job_urls() -> None:
@@ -121,3 +126,77 @@ def test_invalid_board_url_returns_empty() -> None:
     """A board URL without a host produces no candidates."""
     out = enumerate_board_html(html="<a href='/x/1'>x</a>", board_url="not-a-url")
     assert out == []
+
+
+# ---------------------------------------------------------------------------
+# fetch_and_enumerate — integration of fetch_with_fallback
+
+
+@dataclass
+class _FakeResponse:
+    status_code: int = 200
+    text: str = ""
+    url: str = ""
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"http {self.status_code}")
+
+
+@dataclass
+class _FakeSession:
+    routes: dict[str, _FakeResponse] = field(default_factory=dict)
+
+    def get(self, url: str, *args: object, **kwargs: object) -> _FakeResponse:
+        resp = self.routes.get(url)
+        if resp is None:
+            return _FakeResponse(status_code=404, text="", url=url)
+        resp.url = resp.url or url
+        return resp
+
+
+class _StubFallback:
+    def __init__(self, html: str = "", status: int = 200) -> None:
+        self._html = html
+        self._status = status
+        self.calls: list[str] = []
+
+    def fetch_via_playwright(self, url: str) -> FetchResult:
+        self.calls.append(url)
+        return FetchResult(html=self._html, status_code=self._status, final_url=url, used_fallback=True)
+
+    def close(self) -> None:
+        pass
+
+
+def test_fetch_and_enumerate_escalates_to_fallback_on_403() -> None:
+    """A Lever/Ashby-style 403-or-empty board should still yield jobs when
+    fallback is provided."""
+    sess = _FakeSession(routes={"https://jobs.lever.co/acme": _FakeResponse(status_code=403)})
+    fb = _StubFallback(
+        html=(
+            '<html><body>'
+            '<a href="https://jobs.lever.co/acme/job-1">Job 1</a>'
+            '<a href="https://jobs.lever.co/acme/job-2">Job 2</a>'
+            '</body></html>'
+        ),
+        status=200,
+    )
+    urls = fetch_and_enumerate(
+        "https://jobs.lever.co/acme",
+        session=sess,  # type: ignore[arg-type]
+        fallback=fb,  # type: ignore[arg-type]
+    )
+    assert len(urls) == 2
+    assert fb.calls == ["https://jobs.lever.co/acme"]
+
+
+def test_fetch_and_enumerate_no_fallback_returns_empty_on_403() -> None:
+    """Without fallback, a 403 board page returns nothing — same as before."""
+    sess = _FakeSession(routes={"https://lever.co/acme": _FakeResponse(status_code=403)})
+    urls = fetch_and_enumerate(
+        "https://lever.co/acme",
+        session=sess,  # type: ignore[arg-type]
+        fallback=None,
+    )
+    assert urls == []

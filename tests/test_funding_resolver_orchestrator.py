@@ -18,11 +18,17 @@ def _seed(name: str, source_url: str) -> int:
 
 
 def _stub_careers(url: str | None) -> object:
-    return lambda website, retry_budget, session, request_timeout=8.0: url  # type: ignore[no-untyped-def]
+    def _impl(website, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return url
+
+    return _impl
 
 
 def _stub_ats(ats: tuple[str, str] | tuple[None, None]) -> object:
-    return lambda careers, session, request_timeout=8.0: ats  # type: ignore[no-untyped-def]
+    def _impl(careers, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return ats
+
+    return _impl
 
 
 def test_cheap_path_resolves_and_persists(
@@ -100,7 +106,7 @@ def test_step_exception_does_not_abort_other_companies(
     _seed("Acme", "https://acme.io/blog")
     _seed("Beta", "https://beta.io/blog")
 
-    def _flaky_careers(website, retry_budget, session, request_timeout=8.0):  # type: ignore[no-untyped-def]
+    def _flaky_careers(website, *args, **kwargs):  # type: ignore[no-untyped-def]
         if "acme.io" in website:
             raise RuntimeError("careers boom")
         return "https://beta.io/careers"

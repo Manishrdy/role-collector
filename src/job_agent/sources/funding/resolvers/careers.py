@@ -23,6 +23,8 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from job_agent.sources.funding.resolvers._fetch import FetchFallback, fetch_with_fallback
+
 log = logging.getLogger(__name__)
 
 _CANONICAL_PATHS: tuple[str, ...] = (
@@ -80,8 +82,13 @@ def resolve_careers_url(
     retry_budget: int = 8,
     session: requests.Session | None = None,
     request_timeout: float = 8.0,
+    fallback: FetchFallback | None = None,
 ) -> str | None:
-    """Try canonical paths, then nav-link extraction. Return first match or None."""
+    """Try canonical paths, then nav-link extraction. Return first match or None.
+
+    When ``fallback`` is supplied, every probe + homepage fetch escalates
+    to Playwright on 403 / empty / JS-shell responses.
+    """
     sess = session or requests.Session()
     root = _normalise_root(website_url)
 
@@ -90,24 +97,20 @@ def resolve_careers_url(
         if tried > retry_budget:
             break
         candidate = f"{root}{path}"
-        if _probe(sess, candidate, request_timeout):
+        if _probe(sess, candidate, request_timeout, fallback=fallback):
             log.info("[careers] %s -> %s (canonical)", root, candidate)
             return candidate
 
-    # Stage 2: scrape homepage nav
-    try:
-        resp = sess.get(
-            root,
-            timeout=request_timeout,
-            headers={"User-Agent": _USER_AGENT, "Accept": "text/html"},
-            allow_redirects=True,
-        )
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        log.info("[careers] homepage fetch failed for %s: %s", root, e)
+    # Stage 2: scrape homepage nav. Use the same fallback-aware fetcher
+    # so a Cloudflare-fronted homepage still yields anchors.
+    homepage = fetch_with_fallback(
+        root, session=sess, fallback=fallback, request_timeout=request_timeout
+    )
+    if homepage.status_code >= 400 or not homepage.html:
+        log.info("[careers] homepage fetch failed for %s (status=%s)", root, homepage.status_code)
         return None
 
-    soup = BeautifulSoup(resp.text, "lxml")
+    soup = BeautifulSoup(homepage.html, "lxml")
     for a in soup.find_all("a", href=True):
         href_attr = a.get("href")
         href = href_attr if isinstance(href_attr, str) else " ".join(href_attr or [])
@@ -121,26 +124,29 @@ def resolve_careers_url(
             continue
         if any(bad in absolute.lower() for bad in ("linkedin.com", "twitter.com", "x.com")):
             continue
-        if _probe(sess, absolute, request_timeout):
+        if _probe(sess, absolute, request_timeout, fallback=fallback):
             log.info("[careers] %s -> %s (nav-link)", root, absolute)
             return absolute
     log.info("[careers] no careers page found for %s", root)
     return None
 
 
-def _probe(session: requests.Session, url: str, timeout: float) -> bool:
-    """GET a URL with a short timeout; return True iff it looks like a job page."""
-    try:
-        resp = session.get(
-            url,
-            timeout=timeout,
-            headers={"User-Agent": _USER_AGENT, "Accept": "text/html"},
-            allow_redirects=True,
-        )
-    except requests.RequestException:
+def _probe(
+    session: requests.Session,
+    url: str,
+    timeout: float,
+    *,
+    fallback: FetchFallback | None = None,
+) -> bool:
+    """GET a URL with a short timeout; return True iff it looks like a job page.
+
+    Falls back to Playwright on 403 / JS-shell responses when ``fallback`` is set.
+    """
+    result = fetch_with_fallback(
+        url, session=session, fallback=fallback, request_timeout=timeout
+    )
+    if result.status_code >= 400 or result.status_code == 0:
         return False
-    if resp.status_code >= 400:
+    if not result.html or len(result.html) < 200:
         return False
-    if not resp.text or len(resp.text) < 200:
-        return False
-    return _looks_like_job_page(resp.text)
+    return _looks_like_job_page(result.html)

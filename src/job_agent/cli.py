@@ -211,7 +211,9 @@ def resolve_companies(
     )
 
     stats = resolve_unresolved_companies(
-        limit=limit, enable_google_fallback=google_fallback
+        limit=limit,
+        enable_google_fallback=google_fallback,
+        enable_playwright_fallback=cfg.sources.funding_discovery.resolvers.playwright_fallback,
     )
     table = Table(title="resolver stats", show_header=True, header_style="bold")
     table.add_column("metric")

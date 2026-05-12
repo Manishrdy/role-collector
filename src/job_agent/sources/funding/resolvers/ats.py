@@ -22,6 +22,8 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from job_agent.sources.funding.resolvers._fetch import FetchFallback, fetch_with_fallback
+
 log = logging.getLogger(__name__)
 
 _USER_AGENT = (
@@ -85,10 +87,12 @@ def resolve_ats(
     *,
     session: requests.Session | None = None,
     request_timeout: float = 8.0,
+    fallback: FetchFallback | None = None,
 ) -> tuple[str | None, str | None]:
     """End-to-end: probe the careers URL, follow redirects, scan for ATS markers.
 
-    Returns ``(ats_type, ats_url)`` or ``(None, None)``.
+    Returns ``(ats_type, ats_url)`` or ``(None, None)``. When ``fallback``
+    is supplied, blocked / empty responses escalate to Playwright.
     """
     sess = session or requests.Session()
 
@@ -97,32 +101,26 @@ def resolve_ats(
     if direct:
         return direct, careers_url
 
-    try:
-        resp = sess.get(
-            careers_url,
-            timeout=request_timeout,
-            headers={"User-Agent": _USER_AGENT, "Accept": "text/html"},
-            allow_redirects=True,
-        )
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        log.info("[ats] fetch failed for %s: %s", careers_url, e)
+    result = fetch_with_fallback(
+        careers_url, session=sess, fallback=fallback, request_timeout=request_timeout
+    )
+    if result.status_code >= 400 or result.status_code == 0 or not result.html:
+        log.info("[ats] fetch failed for %s (status=%s)", careers_url, result.status_code)
         return None, None
 
     # Did the redirect chain land on an ATS host?
-    final_url = resp.url
-    direct = detect_ats_from_url(final_url)
+    direct = detect_ats_from_url(result.final_url)
     if direct:
-        return direct, final_url
+        return direct, result.final_url
 
     # HTML-embedded ATS.
-    ats, ats_url = detect_ats_from_html(resp.text)
+    ats, ats_url = detect_ats_from_html(result.html)
     if ats and ats_url:
         # Normalise relative-protocol URLs from iframe src.
         if ats_url.startswith("//"):
             ats_url = "https:" + ats_url
         elif ats_url.startswith("/"):
-            base = urlparse(final_url)
+            base = urlparse(result.final_url)
             ats_url = f"{base.scheme}://{base.netloc}{ats_url}"
         return ats, ats_url
     return None, None

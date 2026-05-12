@@ -25,6 +25,8 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from job_agent.sources.funding.resolvers._fetch import FetchFallback, fetch_with_fallback
+
 log = logging.getLogger(__name__)
 
 _USER_AGENT = (
@@ -97,20 +99,23 @@ def fetch_and_enumerate(
     session: requests.Session | None = None,
     request_timeout: float = 15.0,
     max_jobs: int = 100,
+    fallback: FetchFallback | None = None,
 ) -> list[str]:
-    """Fetch a board URL and enumerate. Returns [] on network failure."""
+    """Fetch a board URL and enumerate. Returns [] on network failure.
+
+    When ``fallback`` is supplied, blocked / empty / JS-shell responses
+    escalate to Playwright — which is how Lever / Ashby / Workday boards
+    actually yield jobs (they render listings client-side).
+    """
     sess = session or requests.Session()
-    try:
-        resp = sess.get(
-            board_url,
-            timeout=request_timeout,
-            headers={"User-Agent": _USER_AGENT, "Accept": "text/html"},
-            allow_redirects=True,
+    result = fetch_with_fallback(
+        board_url, session=sess, fallback=fallback, request_timeout=request_timeout
+    )
+    if result.status_code >= 400 or result.status_code == 0 or not result.html:
+        log.info(
+            "[watchlist] fetch failed for %s (status=%s)", board_url, result.status_code
         )
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        log.info("[watchlist] fetch failed for %s: %s", board_url, e)
         return []
     return enumerate_board_html(
-        html=resp.text, board_url=board_url, max_jobs=max_jobs
+        html=result.html, board_url=board_url, max_jobs=max_jobs
     )

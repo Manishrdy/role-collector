@@ -58,6 +58,7 @@ sources:
     resolvers:
       enabled: true
       google_fallback: false  # off by default — nodriver session for name->website lookups
+      playwright_fallback: true  # escalate per-URL on 403 / JS shells (lazy-init)
       max_companies_per_run: 20
   linkedin_public_search:
     enabled: true

@@ -226,10 +226,15 @@ def run_watchlist_node(state: AgentState) -> AgentState:
     Each resolved company (ats_url IS NOT NULL) has its board page fetched
     and individual job posting URLs prepended to ``state["candidate_urls"]``
     so the existing Phase-3 fetch / extract / save pipeline picks them up.
+
+    When ``funding_discovery.resolvers.playwright_fallback`` is on, a single
+    shared FetchFallback is opened for the batch so Lever / Ashby boards
+    can be JS-rendered without paying per-company Playwright startup.
     """
     cfg = load_config()
     if not cfg.sources.funding_discovery.enabled:
         return state
+    from job_agent.sources.funding.resolvers._fetch import FetchFallback
     from job_agent.sources.funding.watchlist import fetch_and_enumerate
 
     watchlist = repo.list_watchlist_companies()
@@ -237,33 +242,39 @@ def run_watchlist_node(state: AgentState) -> AgentState:
         _event(state, "watchlist", "no resolved companies to poll")
         return state
 
+    use_fallback = cfg.sources.funding_discovery.resolvers.playwright_fallback
+    fb: FetchFallback | None = FetchFallback() if use_fallback else None
     new_candidates: list[dict[str, Any]] = []
     by_ats: dict[str, int] = {}
-    for company in watchlist:
-        if not company.ats_url:
-            continue
-        urls = fetch_and_enumerate(company.ats_url)
-        for url in urls:
-            new_candidates.append(
-                {
-                    "url": url,
-                    "canonical_url": url,
-                    "title": f"Careers @ {company.name}",
-                    "snippet": "",
-                    "rank": 0,
-                    "engine": "watchlist",
-                    "source_type": "watchlist",
-                    "source_query": company.ats_url,
-                    "target_domain": "",
-                    "ats_type": company.ats_type or "unknown",
-                    "time_window": "any",
-                    "role": "",
-                    "location": None,
-                }
-            )
-        by_ats[company.ats_type or "unknown"] = by_ats.get(company.ats_type or "unknown", 0) + len(
-            urls
-        )
+    try:
+        for company in watchlist:
+            if not company.ats_url:
+                continue
+            urls = fetch_and_enumerate(company.ats_url, fallback=fb)
+            for url in urls:
+                new_candidates.append(
+                    {
+                        "url": url,
+                        "canonical_url": url,
+                        "title": f"Careers @ {company.name}",
+                        "snippet": "",
+                        "rank": 0,
+                        "engine": "watchlist",
+                        "source_type": "watchlist",
+                        "source_query": company.ats_url,
+                        "target_domain": "",
+                        "ats_type": company.ats_type or "unknown",
+                        "time_window": "any",
+                        "role": "",
+                        "location": None,
+                    }
+                )
+            by_ats[company.ats_type or "unknown"] = by_ats.get(
+                company.ats_type or "unknown", 0
+            ) + len(urls)
+    finally:
+        if fb is not None:
+            fb.close()
 
     existing = state.get("candidate_urls", []) or []
     # Prepend so watchlist URLs are processed before raw ATS-search results.

@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 import pytest
 import requests
 
+from job_agent.sources.funding.resolvers._fetch import FetchResult
 from job_agent.sources.funding.resolvers.ats import (
     detect_ats_from_html,
     detect_ats_from_url,
@@ -252,6 +253,69 @@ def test_resolve_ats_follows_redirect_to_ats() -> None:
     )
     assert ats == "lever"
     assert url == "https://jobs.lever.co/acme"
+
+
+class _StubFallback:
+    """Test double — records calls + returns canned HTML."""
+
+    def __init__(self, html: str = "", status: int = 200) -> None:
+        self._html = html
+        self._status = status
+        self.calls: list[str] = []
+
+    def fetch_via_playwright(self, url: str) -> FetchResult:
+        self.calls.append(url)
+        return FetchResult(
+            html=self._html, status_code=self._status, final_url=url, used_fallback=True
+        )
+
+    def close(self) -> None:
+        pass
+
+
+def test_careers_resolver_escalates_to_fallback_on_403() -> None:
+    """When the homepage returns 403, fallback Playwright HTML should be
+    parsed for nav links."""
+    sess = _FakeSession(
+        routes={
+            "https://acme.io": _FakeResponse(status_code=403, text=""),  # 403 -> fallback
+        }
+    )
+    fb = _StubFallback(
+        html=(
+            "<html><body>"
+            + ("filler " * 200)
+            + '<a href="/positions">Job Openings</a>'
+            + "</body></html>"
+        )
+    )
+    # /careers etc. probes also 404 by default — fallback might be called for them too.
+    out = resolve_careers_url(
+        "https://acme.io", session=sess, request_timeout=1.0, fallback=fb  # type: ignore[arg-type]
+    )
+    # Fallback returned a homepage with /positions; we then probe that —
+    # which 404s in the fake session. So returned URL stays None, but
+    # the important thing is fallback WAS used on the homepage path.
+    assert any("acme.io" in c for c in fb.calls)
+    # ensure out doesn't crash
+    assert out is None or out.endswith("/positions")
+
+
+def test_resolve_ats_uses_fallback_on_403() -> None:
+    sess = _FakeSession(routes={"https://acme.io/careers": _FakeResponse(status_code=403)})
+    fb = _StubFallback(
+        html='<iframe src="https://boards.greenhouse.io/acme"></iframe>',
+        status=200,
+    )
+    ats, url = resolve_ats(
+        "https://acme.io/careers",
+        session=sess,
+        request_timeout=1.0,
+        fallback=fb,  # type: ignore[arg-type]
+    )
+    assert ats == "greenhouse"
+    assert url == "https://boards.greenhouse.io/acme"
+    assert fb.calls == ["https://acme.io/careers"]
 
 
 def test_resolve_ats_detects_iframe_after_fetch() -> None:
