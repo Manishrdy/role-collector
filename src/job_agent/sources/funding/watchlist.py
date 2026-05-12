@@ -26,12 +26,17 @@ Per-job page fetches stay on the existing async Playwright pipeline.
 from __future__ import annotations
 
 import logging
-import re
 from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
+from job_agent.sources.ats_api.clients import (
+    enumerate_greenhouse,
+    enumerate_lever,
+    greenhouse_slug_from_url,
+    lever_slug_from_url,
+)
 from job_agent.sources.funding.resolvers._fetch import FetchFallback, fetch_with_fallback
 
 log = logging.getLogger(__name__)
@@ -43,107 +48,9 @@ _USER_AGENT = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Provider-specific API enumerators
-#
-# Lever and Greenhouse both publish documented JSON endpoints that return
-# every public posting for a company. We prefer these over HTML scraping
-# because they're stable, captcha-proof, and don't require waiting for JS.
-
-# `jobs.lever.co/<slug>` -> "<slug>"
-_LEVER_SLUG_RE = re.compile(
-    r"^https?://jobs\.lever\.co/([^/?#]+)/?", re.IGNORECASE
-)
-
-# `boards.greenhouse.io/<slug>` or `job-boards.greenhouse.io/<slug>` -> "<slug>"
-_GREENHOUSE_SLUG_RE = re.compile(
-    r"^https?://(?:boards|job-boards)\.greenhouse\.io/([^/?#]+)/?",
-    re.IGNORECASE,
-)
-
-
-def _match_lever_slug(board_url: str) -> str | None:
-    m = _LEVER_SLUG_RE.match(board_url.strip())
-    return m.group(1) if m else None
-
-
-def _match_greenhouse_slug(board_url: str) -> str | None:
-    m = _GREENHOUSE_SLUG_RE.match(board_url.strip())
-    return m.group(1) if m else None
-
-
-def _enumerate_via_lever_api(
-    slug: str,
-    *,
-    session: requests.Session,
-    request_timeout: float,
-    max_jobs: int,
-) -> list[str] | None:
-    """Hit Lever's public postings API. Returns None on transport failure
-    so the caller can fall back to HTML scraping."""
-    url = f"https://api.lever.co/v0/postings/{slug}?mode=json"
-    try:
-        resp = session.get(
-            url,
-            timeout=request_timeout,
-            headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except (requests.RequestException, ValueError) as e:
-        log.info("[watchlist/lever-api] %s failed: %s", url, e)
-        return None
-    if not isinstance(data, list):
-        return None
-    out: list[str] = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        hosted = item.get("hostedUrl")
-        if isinstance(hosted, str) and hosted.startswith("https://"):
-            out.append(hosted)
-            if len(out) >= max_jobs:
-                break
-    log.info("[watchlist/lever-api] %d jobs for %s", len(out), slug)
-    return out
-
-
-def _enumerate_via_greenhouse_api(
-    slug: str,
-    *,
-    session: requests.Session,
-    request_timeout: float,
-    max_jobs: int,
-) -> list[str] | None:
-    """Hit Greenhouse's public Job Board API. Returns None on transport failure."""
-    url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"
-    try:
-        resp = session.get(
-            url,
-            timeout=request_timeout,
-            headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except (requests.RequestException, ValueError) as e:
-        log.info("[watchlist/greenhouse-api] %s failed: %s", url, e)
-        return None
-    if not isinstance(data, dict):
-        return None
-    jobs = data.get("jobs")
-    if not isinstance(jobs, list):
-        return None
-    out: list[str] = []
-    for item in jobs:
-        if not isinstance(item, dict):
-            continue
-        absolute = item.get("absolute_url")
-        if isinstance(absolute, str) and absolute.startswith("https://"):
-            out.append(absolute)
-            if len(out) >= max_jobs:
-                break
-    log.info("[watchlist/greenhouse-api] %d jobs for %s", len(out), slug)
-    return out
+# Lever + Greenhouse API enumerators live in `sources.ats_api.clients` so
+# they can be reused by the discovery node too. Slug parsing is re-exported
+# below for backwards-compat with existing tests.
 
 
 def _path_segments(url: str) -> list[str]:
@@ -224,9 +131,9 @@ def fetch_and_enumerate(
     sess = session or requests.Session()
 
     # Provider-specific JSON paths.
-    lever_slug = _match_lever_slug(board_url)
+    lever_slug = lever_slug_from_url(board_url)
     if lever_slug:
-        out = _enumerate_via_lever_api(
+        out = enumerate_lever(
             lever_slug, session=sess, request_timeout=request_timeout, max_jobs=max_jobs
         )
         if out is not None:
@@ -234,9 +141,9 @@ def fetch_and_enumerate(
         log.info("[watchlist] lever API failed; not falling back to HTML (would be 0 jobs)")
         return []
 
-    gh_slug = _match_greenhouse_slug(board_url)
+    gh_slug = greenhouse_slug_from_url(board_url)
     if gh_slug:
-        out = _enumerate_via_greenhouse_api(
+        out = enumerate_greenhouse(
             gh_slug, session=sess, request_timeout=request_timeout, max_jobs=max_jobs
         )
         if out is not None:

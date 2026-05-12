@@ -20,6 +20,7 @@ _NODE_SEQUENCE: list[tuple[str, Callable[[AgentState], AgentState]]] = [
     ("load_config", nodes.load_config_node),
     ("create_search_run", nodes.create_search_run_node),
     ("generate_search_plan", nodes.generate_search_plan_node),
+    ("run_ats_api_discovery", nodes.run_ats_api_discovery_node),
     ("run_ats_google_search", nodes.run_ats_google_search_node),
     ("run_funding_discovery", nodes.run_funding_discovery_node),
     ("run_funding_resolvers", nodes.run_funding_resolvers_node),

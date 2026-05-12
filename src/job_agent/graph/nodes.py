@@ -120,6 +120,42 @@ def generate_search_plan_node(state: AgentState) -> AgentState:
     return state
 
 
+def run_ats_api_discovery_node(state: AgentState) -> AgentState:
+    """Enumerate jobs from seed slugs via Lever/Greenhouse/Ashby public APIs.
+
+    Runs BEFORE Google search so the candidate pool starts with reliable
+    API-sourced URLs. Subsequent ATS Google search (if it survives the
+    rate limiter) only adds long-tail companies we don't know about.
+    """
+    cfg = load_config()
+    if not cfg.sources.ats_api_discovery.enabled:
+        _event(state, "ats_api_discovery", "disabled in config")
+        return state
+    seeds = cfg.sources.ats_api_discovery.seeds
+    if not seeds:
+        _event(state, "ats_api_discovery", "no seed slugs configured")
+        return state
+    from job_agent.sources.ats_api.discovery import discover_from_seeds
+
+    candidates, stats = discover_from_seeds(
+        seeds, max_jobs_per_slug=cfg.sources.ats_api_discovery.max_jobs_per_slug
+    )
+    existing = state.get("candidate_urls", []) or []
+    state["candidate_urls"] = candidates + existing
+    _event(
+        state,
+        "ats_api_discovery_done",
+        (
+            f"slugs_checked={stats.slugs_checked} "
+            f"slugs_with_jobs={stats.slugs_with_jobs} "
+            f"slugs_failed={stats.slugs_failed} "
+            f"jobs={stats.jobs_total} "
+            f"by_provider={stats.by_provider}"
+        ),
+    )
+    return state
+
+
 def run_ats_google_search_node(state: AgentState) -> AgentState:
     cfg = load_config()
     runtime = state.get("runtime", {}) or {}

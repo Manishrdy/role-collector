@@ -45,6 +45,20 @@ class ATSGoogleSearchSection(BaseModel):
     max_queries_before_self_stop: int = 10
 
 
+class ATSAPIDiscoverySection(BaseModel):
+    """Seed-slug ATS API discovery — runs BEFORE Google search.
+
+    Hits each provider's public JSON board API for every slug in `seeds`.
+    Faster, more reliable, and not rate-limited by Google. Slugs are
+    curated up-front; they grow over time as the resolver/watchlist
+    chain learns new ones.
+    """
+    enabled: bool = True
+    max_jobs_per_slug: int = 20
+    # Seed slugs to enumerate, keyed by provider.
+    seeds: dict[str, list[str]] = Field(default_factory=dict)
+
+
 class FundingAggregatorToggles(BaseModel):
     hackernews: bool = True
     techcrunch: bool = True
@@ -89,6 +103,7 @@ class LinkedInPublicSearchSection(BaseModel):
 
 class SourcesSection(BaseModel):
     ats_google_search: ATSGoogleSearchSection = Field(default_factory=ATSGoogleSearchSection)
+    ats_api_discovery: ATSAPIDiscoverySection = Field(default_factory=ATSAPIDiscoverySection)
     funding_discovery: FundingDiscoverySection = Field(default_factory=FundingDiscoverySection)
     linkedin_public_search: LinkedInPublicSearchSection = Field(
         default_factory=LinkedInPublicSearchSection

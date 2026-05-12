@@ -213,17 +213,17 @@ def test_fetch_and_enumerate_no_fallback_returns_empty_on_403() -> None:
 
 
 def test_match_lever_slug() -> None:
-    from job_agent.sources.funding.watchlist import _match_lever_slug
+    from job_agent.sources.ats_api.clients import lever_slug_from_url
 
-    assert _match_lever_slug("https://jobs.lever.co/acme") == "acme"
-    assert _match_lever_slug("https://jobs.lever.co/Acme-Corp/") == "Acme-Corp"
-    assert _match_lever_slug("https://jobs.lever.co/acme?from=x") == "acme"
-    assert _match_lever_slug("https://boards.greenhouse.io/acme") is None
-    assert _match_lever_slug("https://acme.io/careers") is None
+    assert lever_slug_from_url("https://jobs.lever.co/acme") == "acme"
+    assert lever_slug_from_url("https://jobs.lever.co/Acme-Corp/") == "Acme-Corp"
+    assert lever_slug_from_url("https://jobs.lever.co/acme?from=x") == "acme"
+    assert lever_slug_from_url("https://boards.greenhouse.io/acme") is None
+    assert lever_slug_from_url("https://acme.io/careers") is None
 
 
 def test_match_greenhouse_slug() -> None:
-    from job_agent.sources.funding.watchlist import _match_greenhouse_slug
+    from job_agent.sources.ats_api.clients import greenhouse_slug_from_url as _match_greenhouse_slug
 
     assert _match_greenhouse_slug("https://boards.greenhouse.io/acme") == "acme"
     assert _match_greenhouse_slug("https://job-boards.greenhouse.io/acme") == "acme"

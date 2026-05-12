@@ -38,6 +38,44 @@ search:
   max_results_per_query: 10
 
 sources:
+  # ATS API discovery — hits Lever/Greenhouse/Ashby public board APIs
+  # directly for every slug below. Runs BEFORE Google search so Google
+  # becomes a long-tail fallback rather than the primary source.
+  ats_api_discovery:
+    enabled: true
+    max_jobs_per_slug: 20
+    seeds:
+      lever:
+        - spotify
+        - palantir
+        - mux
+        - kraken
+        - ramp
+        - notion
+        - figma
+        - linear
+        - vercel
+      greenhouse:
+        - figma
+        - openai
+        - airbnb
+        - stripe
+        - anthropic
+        - retool
+        - asana
+        - databricks
+        - vercel
+        - loom
+      ashby:
+        - openai
+        - anthropic
+        - mercury
+        - ramp
+        - vanta
+        - linear
+        - replit
+        - causal
+        - posthog
   ats_google_search:
     enabled: true
     # Stop the channel after N successful queries instead of waiting for
