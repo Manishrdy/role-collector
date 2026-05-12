@@ -119,7 +119,7 @@ def api_overview() -> JSONResponse:
         latest = conn.execute(
             """
             SELECT id, company_name, title, location, ats_type, duplicate_status,
-                   first_seen_at
+                   first_seen_at, apply_url, canonical_url
             FROM jobs
             ORDER BY id DESC
             LIMIT 10
@@ -179,7 +179,8 @@ def api_jobs(
         rows = conn.execute(
             f"""
             SELECT id, company_name, title, location, remote_type, ats_type,
-                   duplicate_status, needs_review, first_seen_at, apply_url
+                   duplicate_status, needs_review, first_seen_at, apply_url,
+                   canonical_url
             FROM jobs
             {where_sql}
             ORDER BY first_seen_at DESC, id DESC

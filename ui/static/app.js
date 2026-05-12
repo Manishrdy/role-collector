@@ -32,6 +32,13 @@ function fmtDate(iso) {
   }
 }
 
+function applyLink(j) {
+  // Prefer apply_url (the ATS form); fall back to canonical_url (the posting).
+  const url = j.apply_url || j.canonical_url;
+  if (!url) return '<span class="text-mute">—</span>';
+  return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener" class="apply-link">Apply ↗</a>`;
+}
+
 function badge(label) {
   const cls = {
     new: "new",
@@ -90,12 +97,13 @@ async function renderOverview() {
           <td>${escapeHtml(j.ats_type || "—")}</td>
           <td>${badge(j.duplicate_status)}</td>
           <td class="mono">${fmtDate(j.first_seen_at)}</td>
+          <td>${applyLink(j)}</td>
         </tr>
       `
       )
       .join("");
   } else {
-    $("#latest-body").innerHTML = `<tr><td colspan="7" class="empty">No jobs yet — run <code>make run</code>.</td></tr>`;
+    $("#latest-body").innerHTML = `<tr><td colspan="8" class="empty">No jobs yet — run <code>make run</code>.</td></tr>`;
   }
   $("#db-path").textContent = data.db_path;
 }
@@ -129,7 +137,7 @@ async function renderJobs() {
 
   // Rows
   if (!data.rows.length) {
-    $("#jobs-body").innerHTML = `<tr><td colspan="8" class="empty">No jobs match the current filters.</td></tr>`;
+    $("#jobs-body").innerHTML = `<tr><td colspan="9" class="empty">No jobs match the current filters.</td></tr>`;
   } else {
     $("#jobs-body").innerHTML = data.rows
       .map(
@@ -143,6 +151,7 @@ async function renderJobs() {
           <td>${escapeHtml(j.ats_type || "—")}</td>
           <td>${badge(j.duplicate_status)}</td>
           <td class="mono">${fmtDate(j.first_seen_at)}</td>
+          <td>${applyLink(j)}</td>
         </tr>
       `
       )

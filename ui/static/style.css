@@ -153,6 +153,20 @@ table.data {
 .data tr:hover td { background: var(--bg-elev); }
 .data td a { color: var(--accent); }
 
+/* prominent apply link */
+.apply-link {
+  display: inline-block;
+  padding: 3px 12px;
+  background: var(--accent);
+  color: #0a0c11 !important;
+  border-radius: var(--radius);
+  font-weight: 500;
+  font-size: 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.apply-link:hover { background: #4f93ff; text-decoration: none; }
+
 /* ---------- filter bar ---------- */
 .filters {
   display: flex;
