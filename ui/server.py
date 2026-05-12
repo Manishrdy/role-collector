@@ -58,8 +58,9 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 @app.get("/", response_class=HTMLResponse)
-def page_overview(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "overview.html", {"page": "overview"})
+def page_home(request: Request) -> HTMLResponse:
+    # Jobs is the landing page; no separate overview.
+    return templates.TemplateResponse(request, "jobs.html", {"page": "jobs"})
 
 
 @app.get("/jobs", response_class=HTMLResponse)

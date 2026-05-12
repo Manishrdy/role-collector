@@ -62,50 +62,30 @@ function toast(msg) {
 }
 
 // ---------------------------------------------------------------------------
-// /api/overview
+// /api/overview — metric tiles rendered on top of the Jobs page
 
-async function renderOverview() {
-  const data = await fetchJSON("/api/overview");
-  const t = data.totals;
-  const tiles = [
-    ["Total jobs", t.jobs],
-    ["New", t.new],
-    ["Possible duplicates", t.possible],
-    ["Confirmed duplicates", t.dup],
-    ["Needs review", t.needs_review],
-    ["Funding events", t.funding],
-    ["LinkedIn posts", t.linkedin],
-    ["Watchlist", t.watchlist],
-    ["Companies", t.companies],
-    ["Search runs", t.runs],
-  ];
-  $("#metrics").innerHTML = tiles
-    .map(
-      ([label, n]) =>
-        `<div class="metric"><div class="metric-label">${escapeHtml(label)}</div><div class="metric-value">${n}</div></div>`
-    )
-    .join("");
-  if (data.latest && data.latest.length > 0) {
-    $("#latest-body").innerHTML = data.latest
+async function renderMetrics() {
+  try {
+    const data = await fetchJSON("/api/overview");
+    const t = data.totals;
+    // Curated subset per user request: total jobs, new, funding, linkedin, companies, runs.
+    const tiles = [
+      ["Total jobs", t.jobs],
+      ["New", t.new],
+      ["Funding events", t.funding],
+      ["LinkedIn posts", t.linkedin],
+      ["Companies", t.companies],
+      ["Search runs", t.runs],
+    ];
+    $("#metrics").innerHTML = tiles
       .map(
-        (j) => `
-        <tr>
-          <td><a href="/jobs/${j.id}">${j.id}</a></td>
-          <td>${escapeHtml(j.company_name)}</td>
-          <td>${escapeHtml(j.title)}</td>
-          <td>${escapeHtml(j.location || "—")}</td>
-          <td>${escapeHtml(j.ats_type || "—")}</td>
-          <td>${badge(j.duplicate_status)}</td>
-          <td class="mono">${fmtDate(j.first_seen_at)}</td>
-          <td>${applyLink(j)}</td>
-        </tr>
-      `
+        ([label, n]) =>
+          `<div class="metric"><div class="metric-label">${escapeHtml(label)}</div><div class="metric-value">${n}</div></div>`
       )
       .join("");
-  } else {
-    $("#latest-body").innerHTML = `<tr><td colspan="8" class="empty">No jobs yet — run <code>make run</code>.</td></tr>`;
+  } catch (e) {
+    $("#metrics").innerHTML = `<div class="empty">Failed to load metrics: ${escapeHtml(e.message)}</div>`;
   }
-  $("#db-path").textContent = data.db_path;
 }
 
 // ---------------------------------------------------------------------------
@@ -491,9 +471,9 @@ async function renderRuns() {
 document.addEventListener("DOMContentLoaded", () => {
   const page = document.body.dataset.page;
   try {
-    if (page === "overview") renderOverview();
-    else if (page === "jobs") {
+    if (page === "jobs") {
       bindJobsFilters();
+      renderMetrics();
       renderJobs();
     } else if (page === "job_detail") renderJobDetail(parseInt(document.body.dataset.jobId, 10));
     else if (page === "dedup") renderDedup();
