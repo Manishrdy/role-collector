@@ -194,6 +194,32 @@ def run_funding_discovery_node(state: AgentState) -> AgentState:
     return state
 
 
+def run_funding_resolvers_node(state: AgentState) -> AgentState:
+    cfg = load_config()
+    if not cfg.sources.funding_discovery.enabled:
+        return state
+    if not cfg.sources.funding_discovery.resolvers.enabled:
+        _event(state, "funding_resolvers", "disabled in config")
+        return state
+    from job_agent.sources.funding.resolvers.orchestrator import resolve_unresolved_companies
+
+    stats = resolve_unresolved_companies(
+        limit=cfg.sources.funding_discovery.resolvers.max_companies_per_run,
+        enable_google_fallback=cfg.sources.funding_discovery.resolvers.google_fallback,
+    )
+    _event(
+        state,
+        "funding_resolvers",
+        (
+            f"checked={stats.companies_checked} "
+            f"websites={stats.websites_resolved} careers={stats.careers_resolved} "
+            f"ats={stats.ats_resolved} vc_skipped={stats.skipped_vc_funds} "
+            f"personal_skipped={stats.skipped_personal_names} errors={len(stats.errors)}"
+        ),
+    )
+    return state
+
+
 def run_linkedin_public_search_node(state: AgentState) -> AgentState:
     cfg = load_config()
     if not cfg.sources.linkedin_public_search.enabled:

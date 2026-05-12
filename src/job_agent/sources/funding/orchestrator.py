@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from job_agent.config import AppConfig
 from job_agent.db import repo

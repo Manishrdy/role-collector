@@ -187,6 +187,74 @@ def run(
     console.print(f"[green]run finished[/green] (run_id={final.get('run_id')})")
 
 
+@app.command()
+def resolve_companies(
+    limit: int = typer.Option(20, "--limit", help="Max companies to resolve per run."),
+    google_fallback: bool = typer.Option(
+        False,
+        "--google-fallback",
+        help="Spin up nodriver to look up company websites by name when the cheap path fails.",
+    ),
+) -> None:
+    """Run the funding-resolver pipeline manually (name -> website -> careers -> ATS).
+
+    Useful for backfilling resolutions over a batch of funding_events without
+    triggering a full agent run.
+    """
+    _configure_logging()
+    cfg = load_config()
+    if not cfg.sources.funding_discovery.enabled:
+        console.print("[red]funding_discovery.enabled is false in config[/red]")
+        sys.exit(1)
+    from job_agent.sources.funding.resolvers.orchestrator import (
+        resolve_unresolved_companies,
+    )
+
+    stats = resolve_unresolved_companies(
+        limit=limit, enable_google_fallback=google_fallback
+    )
+    table = Table(title="resolver stats", show_header=True, header_style="bold")
+    table.add_column("metric")
+    table.add_column("count", justify="right")
+    table.add_row("companies checked", str(stats.companies_checked))
+    table.add_row("websites resolved", str(stats.websites_resolved))
+    table.add_row("careers pages found", str(stats.careers_resolved))
+    table.add_row("ATS detected", str(stats.ats_resolved))
+    table.add_row("VC funds skipped", str(stats.skipped_vc_funds))
+    table.add_row("personal names skipped", str(stats.skipped_personal_names))
+    table.add_row("errors", str(len(stats.errors)))
+    console.print(table)
+    for err in stats.errors[:10]:
+        console.print(f"  [red]err[/red] {err}")
+
+
+@app.command()
+def list_watchlist() -> None:
+    """Show every company with a resolved ATS URL — these are the watchlist."""
+    _configure_logging()
+    from job_agent.db import repo
+
+    rows = repo.list_watchlist_companies()
+    if not rows:
+        console.print("[yellow]no companies resolved yet[/yellow]")
+        return
+    table = Table(title=f"watchlist ({len(rows)} companies)", show_header=True)
+    table.add_column("id", justify="right")
+    table.add_column("name")
+    table.add_column("ats")
+    table.add_column("ats url", overflow="fold")
+    table.add_column("last checked")
+    for r in rows:
+        table.add_row(
+            str(r.company_id),
+            r.name,
+            r.ats_type or "—",
+            r.ats_url or "—",
+            r.last_checked_at or "—",
+        )
+    console.print(table)
+
+
 def main() -> None:
     try:
         app()

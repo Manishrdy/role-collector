@@ -47,9 +47,16 @@ class FundingAggregatorToggles(BaseModel):
     google: bool = False  # off by default — costs a nodriver session
 
 
+class FundingResolversSection(BaseModel):
+    enabled: bool = True
+    google_fallback: bool = False  # off by default — costs a nodriver session
+    max_companies_per_run: int = 20
+
+
 class FundingDiscoverySection(BaseModel):
     enabled: bool = False
     aggregators: FundingAggregatorToggles = Field(default_factory=FundingAggregatorToggles)
+    resolvers: FundingResolversSection = Field(default_factory=FundingResolversSection)
 
 
 class LinkedInPublicSearchSection(BaseModel):

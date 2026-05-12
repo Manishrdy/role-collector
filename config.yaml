@@ -55,6 +55,10 @@ sources:
       hackernews: true
       techcrunch: true
       google: false  # off by default — turn on for deeper coverage at the cost of a nodriver session
+    resolvers:
+      enabled: true
+      google_fallback: false  # off by default — nodriver session for name->website lookups
+      max_companies_per_run: 20
   linkedin_public_search:
     enabled: false  # turned on after Phase 6
     login_allowed: false

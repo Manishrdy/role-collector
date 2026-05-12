@@ -618,6 +618,137 @@ def upsert_funding_event(
         )
 
 
+@dataclass(frozen=True)
+class CompanyResolutionRow:
+    company_id: int
+    name: str
+    normalized_name: str
+    website_url: str | None
+    careers_url: str | None
+    ats_type: str | None
+    ats_url: str | None
+    last_checked_at: str | None
+    latest_funding_source_url: str | None = None
+
+
+def update_company_resolution(
+    *,
+    company_id: int,
+    website_url: str | None = None,
+    careers_url: str | None = None,
+    ats_type: str | None = None,
+    ats_url: str | None = None,
+    notes: str | None = None,
+    db_path: str | Path | None = None,
+) -> None:
+    """Patch a companies row with resolver outputs. None-valued args are not
+    overwritten, so resolvers can update only the fields they discovered.
+    """
+    fields: list[str] = []
+    values: list[Any] = []
+    if website_url is not None:
+        fields.append("website_url = ?")
+        values.append(website_url)
+    if careers_url is not None:
+        fields.append("careers_url = ?")
+        values.append(careers_url)
+    if ats_type is not None:
+        fields.append("ats_type = ?")
+        values.append(ats_type)
+    if ats_url is not None:
+        fields.append("ats_url = ?")
+        values.append(ats_url)
+    if notes is not None:
+        fields.append("notes = ?")
+        values.append(notes)
+    fields.append("last_checked_at = ?")
+    values.append(_utc_now_iso())
+    if not fields:
+        return
+    values.append(company_id)
+    with connect(db_path) as conn:
+        conn.execute(
+            f"UPDATE companies SET {', '.join(fields)} WHERE id = ?",
+            values,
+        )
+
+
+def list_unresolved_funding_companies(
+    *,
+    limit: int = 50,
+    db_path: str | Path | None = None,
+) -> list[CompanyResolutionRow]:
+    """Companies referenced by funding_events whose website_url is still NULL.
+
+    Returns at most ``limit`` rows so a single agent run doesn't try to
+    resolve hundreds of companies. Ordered by most-recently discovered
+    funding event so fresh announcements win.
+    """
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT c.id, c.name, c.normalized_name, c.website_url, c.careers_url,
+                   c.ats_type, c.ats_url, c.last_checked_at,
+                   (SELECT source_url FROM funding_events
+                    WHERE company_id = c.id
+                    ORDER BY id DESC LIMIT 1) AS latest_funding_source_url
+            FROM companies c
+            WHERE c.website_url IS NULL
+              AND c.id IN (SELECT DISTINCT company_id FROM funding_events
+                           WHERE company_id IS NOT NULL)
+            ORDER BY (
+              SELECT MAX(id) FROM funding_events WHERE company_id = c.id
+            ) DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [
+        CompanyResolutionRow(
+            company_id=int(r["id"]),
+            name=r["name"],
+            normalized_name=r["normalized_name"],
+            website_url=r["website_url"],
+            careers_url=r["careers_url"],
+            ats_type=r["ats_type"],
+            ats_url=r["ats_url"],
+            last_checked_at=r["last_checked_at"],
+            latest_funding_source_url=r["latest_funding_source_url"],
+        )
+        for r in rows
+    ]
+
+
+def list_watchlist_companies(
+    *,
+    db_path: str | Path | None = None,
+) -> list[CompanyResolutionRow]:
+    """Companies with a resolved ATS URL — these get re-polled for fresh jobs."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name, normalized_name, website_url, careers_url,
+                   ats_type, ats_url, last_checked_at
+            FROM companies
+            WHERE ats_url IS NOT NULL
+            ORDER BY last_checked_at ASC NULLS FIRST
+            """,
+        ).fetchall()
+    return [
+        CompanyResolutionRow(
+            company_id=int(r["id"]),
+            name=r["name"],
+            normalized_name=r["normalized_name"],
+            website_url=r["website_url"],
+            careers_url=r["careers_url"],
+            ats_type=r["ats_type"],
+            ats_url=r["ats_url"],
+            last_checked_at=r["last_checked_at"],
+        )
+        for r in rows
+    ]
+
+
 def set_duplicate_decision(
     *,
     job_id: int,
