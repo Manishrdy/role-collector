@@ -8,7 +8,7 @@ agent:
 
 llm:
   provider: ollama
-  model: qwen3:8b
+  model: deepseek-r1:8b
   temperature: 0.0
   max_context_chars_per_page: 12000
   request_timeout_seconds: 90
@@ -149,6 +149,30 @@ tracing:
   redact_pii: true
   log_raw_page_text: false
   log_resume_text: false
+
+agent_loop:
+  enabled: true
+  react_enabled: true
+  react_llm_enabled: false
+  react_llm_sample_rate: 1.0
+  react_max_steps: 24
+  intelligence_llm_enabled: false
+  cycle_reflection_llm_enabled: false
+  cycle_sleep_hours: 4.0
+  batch_min_jobs: 5
+  batch_max_jobs: 10
+  max_cycle_runtime_minutes: 90
+  max_pages_per_cycle: 150
+  max_google_queries_per_cycle: 10
+  backoff_on_block_hours: 6.0
+  fatal_retry_sleep_minutes: 15.0
+  memory_markdown_enabled: true
+  cadence:
+    ats_api_hours: 4.0
+    google_hours: 4.0
+    funding_hours: 8.0
+    watchlist_hours: 4.0
+    linkedin_hours: 8.0
 
 # Domain allowlist for the URL safety layer. Verified company domains
 # (resolved at runtime by the career-page resolver) get added dynamically.

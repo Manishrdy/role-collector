@@ -5,6 +5,148 @@
 <p class="page-sub">Search-run lifecycle, agent event log, and per-page fetch audit.</p>
 
 <div class="card">
+  <div class="card-title">Worker cycles (last 100)</div>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr><th>ID</th><th>Run</th><th>Status</th><th>Started</th><th>Finished</th><th>Sleep until</th><th>Error</th></tr>
+      </thead>
+      <tbody id="cycles-body">
+        <tr><td colspan="7" class="loading">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">ReAct planner metrics (from cycle summaries)</div>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr><th>Cycle</th><th>Status</th><th>Planner</th><th>Sampled</th><th>Calls</th><th>Valid</th><th>Fallbacks</th><th>Invalid tool</th><th>Finish declined</th><th>Steps</th></tr>
+      </thead>
+      <tbody id="react-metrics-body">
+        <tr><td colspan="10" class="loading">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">ReAct Trace Drilldown</div>
+  <p class="page-sub">Select a cycle to inspect step-by-step ReAct decisions and observations.</p>
+  <div class="filters">
+    <label for="react-trace-cycle-select">Cycle:</label>
+    <select id="react-trace-cycle-select"></select>
+    <label for="react-trace-search">Search:</label>
+    <input id="react-trace-search" type="text" placeholder="tool, reason, message" />
+    <label for="react-trace-status-filter">Status:</label>
+    <select id="react-trace-status-filter">
+      <option value="">all</option>
+      <option value="succeeded">succeeded</option>
+      <option value="failed">failed</option>
+      <option value="skipped">skipped</option>
+    </select>
+    <label for="react-trace-page-size">Rows:</label>
+    <select id="react-trace-page-size">
+      <option value="10">10</option>
+      <option value="20" selected>20</option>
+      <option value="50">50</option>
+    </select>
+    <button id="react-trace-prev" type="button">Prev</button>
+    <span id="react-trace-page-info" class="mono">page 1 / 1</span>
+    <button id="react-trace-next" type="button">Next</button>
+  </div>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr><th>Step</th><th>Phase</th><th>Action</th><th>Tool</th><th>Reason</th><th>Thought</th><th>Obs status</th><th>Obs message</th><th>Candidates</th><th>Saved</th></tr>
+      </thead>
+      <tbody id="react-trace-body">
+        <tr><td colspan="10" class="loading">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">LLM intelligence metrics (from cycle summaries)</div>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr><th>Cycle</th><th>Status</th><th>Calls</th><th>Valid</th><th>Fallbacks</th><th>Reflection conf</th><th>Next focus</th><th>Reflection summary</th></tr>
+      </thead>
+      <tbody id="intelligence-metrics-body">
+        <tr><td colspan="8" class="loading">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">Agent tool calls (last 200)</div>
+  <div class="filters">
+    <label for="tool-calls-search">Search:</label>
+    <input id="tool-calls-search" type="text" placeholder="tool, source, error" />
+    <label for="tool-calls-status-filter">Status:</label>
+    <select id="tool-calls-status-filter">
+      <option value="">all</option>
+      <option value="succeeded">succeeded</option>
+      <option value="failed">failed</option>
+      <option value="skipped">skipped</option>
+    </select>
+    <label for="tool-calls-page-size">Rows:</label>
+    <select id="tool-calls-page-size">
+      <option value="10">10</option>
+      <option value="25" selected>25</option>
+      <option value="50">50</option>
+      <option value="100">100</option>
+    </select>
+    <button id="tool-calls-prev" type="button">Prev</button>
+    <span id="tool-calls-page-info" class="mono">page 1 / 1</span>
+    <button id="tool-calls-next" type="button">Next</button>
+  </div>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr><th>ID</th><th>Cycle</th><th>Tool</th><th>Source</th><th>Status</th><th>Latency (ms)</th><th>Error</th><th>Created</th></tr>
+      </thead>
+      <tbody id="tool-calls-body">
+        <tr><td colspan="8" class="loading">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">Batches (last 100)</div>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr><th>ID</th><th>Cycle</th><th>Status</th><th>Jobs</th><th>Created</th><th>Flushed</th></tr>
+      </thead>
+      <tbody id="batches-body">
+        <tr><td colspan="6" class="loading">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">Source stats</div>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr><th>Source</th><th>Status</th><th>Backoff</th><th>Runs</th><th>Success</th><th>Fail</th><th>Candidates</th><th>Saved</th></tr>
+      </thead>
+      <tbody id="source-stats-body">
+        <tr><td colspan="8" class="loading">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
   <div class="card-title">Search runs (last 100)</div>
   <div class="table-wrap">
     <table class="data">

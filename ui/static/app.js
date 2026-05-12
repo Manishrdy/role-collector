@@ -48,6 +48,25 @@ function badge(label) {
   return `<span class="badge ${cls}">${escapeHtml(label || "—")}</span>`;
 }
 
+function normalizedLocation(j) {
+  if (!j.location_normalized_json) return j.location || "—";
+  try {
+    const parsed = JSON.parse(j.location_normalized_json);
+    return parsed.display || j.location || "—";
+  } catch {
+    return j.location || "—";
+  }
+}
+
+function parseJSONSafe(value) {
+  if (!value || typeof value !== "string") return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
 function toast(msg) {
   let el = $("#toast");
   if (!el) {
@@ -117,7 +136,7 @@ async function renderJobs() {
 
   // Rows
   if (!data.rows.length) {
-    $("#jobs-body").innerHTML = `<tr><td colspan="9" class="empty">No jobs match the current filters.</td></tr>`;
+    $("#jobs-body").innerHTML = `<tr><td colspan="11" class="empty">No jobs match the current filters.</td></tr>`;
   } else {
     $("#jobs-body").innerHTML = data.rows
       .map(
@@ -126,8 +145,10 @@ async function renderJobs() {
           <td><a href="/jobs/${j.id}">${j.id}</a></td>
           <td>${escapeHtml(j.company_name)}</td>
           <td>${escapeHtml(j.title)}</td>
-          <td>${escapeHtml(j.location || "—")}</td>
+          <td>${escapeHtml(normalizedLocation(j))}</td>
           <td>${escapeHtml(j.remote_type || "—")}</td>
+          <td>${escapeHtml(j.role_family || "—")}</td>
+          <td>${escapeHtml(j.level || "—")}</td>
           <td>${escapeHtml(j.ats_type || "—")}</td>
           <td>${badge(j.duplicate_status)}</td>
           <td class="mono">${fmtDate(j.first_seen_at)}</td>
@@ -174,7 +195,11 @@ async function renderJobDetail(jobId) {
 
   const metaCells = [
     ["Location", j.location || "—"],
+    ["Normalized", normalizedLocation(j)],
     ["Remote", j.remote_type || "—"],
+    ["Role family", j.role_family || "—"],
+    ["Role match", j.role_match_status || "—"],
+    ["Level", j.level || "—"],
     ["ATS", j.ats_type || "—"],
     ["Seniority", j.seniority || "—"],
     ["Employment", j.employment_type || "—"],
@@ -229,6 +254,7 @@ async function renderJobDetail(jobId) {
         (s) => `
         <tr>
           <td>${escapeHtml(s.source_type || "—")}</td>
+          <td>${escapeHtml(s.batch_id || "—")}</td>
           <td>${escapeHtml(s.source_query || "—")}</td>
           <td><a href="${escapeHtml(s.source_url)}" target="_blank" rel="noopener" class="mono">${escapeHtml(s.source_url || "—")}</a></td>
           <td class="mono">${fmtDate(s.found_at)}</td>
@@ -237,7 +263,7 @@ async function renderJobDetail(jobId) {
       )
       .join("");
   } else {
-    $("#sources-body").innerHTML = `<tr><td colspan="4" class="empty">No source records.</td></tr>`;
+    $("#sources-body").innerHTML = `<tr><td colspan="5" class="empty">No source records.</td></tr>`;
   }
 }
 
@@ -412,6 +438,156 @@ function bindTabs() {
 
 async function renderRuns() {
   const data = await fetchJSON("/api/runs");
+  const toolCallsAll = Array.isArray(data.tool_calls) ? data.tool_calls : [];
+  let traceRowsAll = [];
+  let tracePage = 1;
+  let toolCallsPage = 1;
+
+  $("#cycles-body").innerHTML = data.cycles && data.cycles.length
+    ? data.cycles
+        .map(
+          (c) => `
+        <tr>
+          <td>${c.id}</td>
+          <td>${c.search_run_id || "—"}</td>
+          <td>${escapeHtml(c.status)}</td>
+          <td class="mono">${fmtDate(c.started_at)}</td>
+          <td class="mono">${fmtDate(c.finished_at)}</td>
+          <td class="mono">${fmtDate(c.sleep_until)}</td>
+          <td>${escapeHtml(c.error_message || "—")}</td>
+        </tr>`
+        )
+        .join("")
+    : `<tr><td colspan="7" class="empty">No worker cycles.</td></tr>`;
+
+  $("#react-metrics-body").innerHTML = data.cycles && data.cycles.length
+    ? data.cycles
+        .map((c) => {
+          const summary = parseJSONSafe(c.summary_json) || {};
+          const metrics = summary.react_metrics || {};
+          const planner = summary.react_planner || {};
+          return `
+        <tr>
+          <td>${c.id}</td>
+          <td>${escapeHtml(c.status || "—")}</td>
+          <td>${planner.enabled ? "on" : "off"}</td>
+          <td>${planner.sampled_in ? "yes" : "no"}</td>
+          <td>${metrics.planner_calls || 0}</td>
+          <td>${metrics.planner_valid || 0}</td>
+          <td>${metrics.planner_fallbacks || 0}</td>
+          <td>${metrics.invalid_tool_choices || 0}</td>
+          <td>${metrics.finish_declined_count || 0}</td>
+          <td>${summary.react_steps || 0}</td>
+        </tr>`;
+        })
+        .join("")
+    : `<tr><td colspan="10" class="empty">No ReAct cycle summaries yet.</td></tr>`;
+
+  $("#intelligence-metrics-body").innerHTML = data.cycles && data.cycles.length
+    ? data.cycles
+        .map((c) => {
+          const summary = parseJSONSafe(c.summary_json) || {};
+          const metrics = summary.intelligence_metrics || {};
+          const reflection = summary.cycle_reflection || {};
+          const focus = Array.isArray(reflection.next_cycle_focus)
+            ? reflection.next_cycle_focus.slice(0, 2).join(" · ")
+            : "—";
+          const reflectionSummary = typeof reflection.summary === "string" ? reflection.summary : "—";
+          return `
+        <tr>
+          <td>${c.id}</td>
+          <td>${escapeHtml(c.status || "—")}</td>
+          <td>${metrics.classifier_calls || 0}</td>
+          <td>${metrics.classifier_valid || 0}</td>
+          <td>${metrics.classifier_fallbacks || 0}</td>
+          <td>${reflection.confidence != null ? Number(reflection.confidence).toFixed(2) : "—"}</td>
+          <td>${escapeHtml(focus)}</td>
+          <td>${escapeHtml(reflectionSummary.slice(0, 120))}</td>
+        </tr>`;
+        })
+        .join("")
+    : `<tr><td colspan="8" class="empty">No intelligence metrics yet.</td></tr>`;
+
+  $("#batches-body").innerHTML = data.batches && data.batches.length
+    ? data.batches
+        .map(
+          (b) => `
+        <tr>
+          <td>${b.id}</td>
+          <td>${b.agent_cycle_id || "—"}</td>
+          <td>${escapeHtml(b.status)}</td>
+          <td>${b.job_count || 0}</td>
+          <td class="mono">${fmtDate(b.created_at)}</td>
+          <td class="mono">${fmtDate(b.flushed_at)}</td>
+        </tr>`
+        )
+        .join("")
+    : `<tr><td colspan="6" class="empty">No batches.</td></tr>`;
+
+  $("#source-stats-body").innerHTML = data.source_stats && data.source_stats.length
+    ? data.source_stats
+        .map(
+          (s) => {
+            const meta = parseJSONSafe(s.metadata_json) || {};
+            const signal = meta.signal || {};
+            const signalBits = [];
+            if (signal.google_blocked_at) signalBits.push("google_blocked");
+            if (signal.posts_blocked) signalBits.push(`posts_blocked=${signal.posts_blocked}`);
+            if (signal.queries_blocked) signalBits.push(`queries_blocked=${signal.queries_blocked}`);
+            if (signal.stop_reason) signalBits.push(String(signal.stop_reason));
+            const signalText = signalBits.length ? signalBits.join(" · ") : "—";
+            return `
+        <tr>
+          <td>${escapeHtml(s.source_name)}</td>
+          <td>${escapeHtml(s.last_status || "—")}</td>
+          <td class="mono">${fmtDate(s.backoff_until)}</td>
+          <td>${s.runs_total || 0}</td>
+          <td>${s.successes_total || 0}</td>
+          <td>${s.failures_total || 0}</td>
+          <td>${s.candidates_total || 0}</td>
+          <td>${s.jobs_saved_total || 0}</td>
+        </tr>
+        <tr>
+          <td colspan="8"><small><code>signal:</code> ${escapeHtml(signalText)}</small></td>
+        </tr>`;
+          }
+        )
+        .join("")
+    : `<tr><td colspan="8" class="empty">No source stats.</td></tr>`;
+
+  const renderToolCalls = () => {
+    const search = ($("#tool-calls-search")?.value || "").toLowerCase().trim();
+    const statusFilter = $("#tool-calls-status-filter")?.value || "";
+    const pageSize = parseInt($("#tool-calls-page-size")?.value || "25", 10);
+    const filtered = toolCallsAll.filter((t) => {
+      if (statusFilter && (t.status || "") !== statusFilter) return false;
+      if (!search) return true;
+      const hay = `${t.tool_name || ""} ${t.source_name || ""} ${t.error_message || ""}`.toLowerCase();
+      return hay.includes(search);
+    });
+    const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+    toolCallsPage = Math.min(Math.max(1, toolCallsPage), totalPages);
+    const start = (toolCallsPage - 1) * pageSize;
+    const pageRows = filtered.slice(start, start + pageSize);
+    $("#tool-calls-page-info").textContent = `page ${toolCallsPage} / ${totalPages} (${filtered.length})`;
+    $("#tool-calls-body").innerHTML = pageRows.length
+      ? pageRows
+          .map(
+            (t) => `
+        <tr>
+          <td>${t.id}</td>
+          <td>${t.agent_cycle_id || "—"}</td>
+          <td><code>${escapeHtml(t.tool_name || "—")}</code></td>
+          <td>${escapeHtml(t.source_name || "—")}</td>
+          <td>${escapeHtml(t.status || "—")}</td>
+          <td>${t.latency_ms ?? "—"}</td>
+          <td>${escapeHtml(t.error_message || "—")}</td>
+          <td class="mono">${fmtDate(t.created_at)}</td>
+        </tr>`
+          )
+          .join("")
+      : `<tr><td colspan="8" class="empty">No tool calls match filters.</td></tr>`;
+  };
 
   $("#runs-body").innerHTML = data.runs.length
     ? data.runs
@@ -463,6 +639,94 @@ async function renderRuns() {
         )
         .join("")
     : `<tr><td colspan="9" class="empty">No page fetches.</td></tr>`;
+
+  const cycleSelect = $("#react-trace-cycle-select");
+  const traceSearchInput = $("#react-trace-search");
+  const traceStatusFilter = $("#react-trace-status-filter");
+  const tracePageSizeSel = $("#react-trace-page-size");
+  const tracePrevBtn = $("#react-trace-prev");
+  const traceNextBtn = $("#react-trace-next");
+  const tracePageInfo = $("#react-trace-page-info");
+
+  const renderTraceTable = () => {
+    const search = (traceSearchInput?.value || "").toLowerCase().trim();
+    const statusFilter = traceStatusFilter?.value || "";
+    const pageSize = parseInt(tracePageSizeSel?.value || "20", 10);
+    const filtered = traceRowsAll.filter((step) => {
+      const decision = step.decision || {};
+      const obs = step.observation || {};
+      if (statusFilter && (obs.status || "") !== statusFilter) return false;
+      if (!search) return true;
+      const hay = `${decision.tool_name || ""} ${decision.reason || ""} ${decision.thought_summary || ""} ${obs.message || ""}`.toLowerCase();
+      return hay.includes(search);
+    });
+    const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+    tracePage = Math.min(Math.max(1, tracePage), totalPages);
+    const start = (tracePage - 1) * pageSize;
+    const pageRows = filtered.slice(start, start + pageSize);
+    if (tracePageInfo) tracePageInfo.textContent = `page ${tracePage} / ${totalPages} (${filtered.length})`;
+    $("#react-trace-body").innerHTML = pageRows.length
+      ? pageRows
+          .map((step) => {
+            const decision = step.decision || {};
+            const obs = step.observation || {};
+            return `
+            <tr>
+              <td>${step.step_index || "—"}</td>
+              <td>${escapeHtml(step.phase || "—")}</td>
+              <td>${escapeHtml(decision.action || "—")}</td>
+              <td><code>${escapeHtml(decision.tool_name || "—")}</code></td>
+              <td>${escapeHtml(decision.reason || "—")}</td>
+              <td>${escapeHtml(decision.thought_summary || "—")}</td>
+              <td>${escapeHtml(obs.status || "—")}</td>
+              <td>${escapeHtml(obs.message || "—")}</td>
+              <td>${obs.candidates ?? "—"}</td>
+              <td>${obs.jobs_saved ?? "—"}</td>
+            </tr>`;
+          })
+          .join("")
+      : `<tr><td colspan="10" class="empty">No trace rows match filters.</td></tr>`;
+  };
+
+  if (cycleSelect) {
+    cycleSelect.innerHTML = (data.cycles || [])
+      .map((c) => `<option value="${c.id}">Cycle ${c.id} · ${escapeHtml(c.status || "—")}</option>`)
+      .join("");
+    const renderTrace = async () => {
+      const cycleId = cycleSelect.value;
+      if (!cycleId) {
+        $("#react-trace-body").innerHTML = `<tr><td colspan="10" class="empty">No cycle selected.</td></tr>`;
+        traceRowsAll = [];
+        renderTraceTable();
+        return;
+      }
+      const detail = await fetchJSON(`/api/runs/${cycleId}/react-trace`);
+      traceRowsAll = Array.isArray(detail.react_trace) ? detail.react_trace : [];
+      tracePage = 1;
+      renderTraceTable();
+    };
+    cycleSelect.onchange = () => {
+      void renderTrace();
+    };
+    if (traceSearchInput) traceSearchInput.oninput = () => { tracePage = 1; renderTraceTable(); };
+    if (traceStatusFilter) traceStatusFilter.onchange = () => { tracePage = 1; renderTraceTable(); };
+    if (tracePageSizeSel) tracePageSizeSel.onchange = () => { tracePage = 1; renderTraceTable(); };
+    if (tracePrevBtn) tracePrevBtn.onclick = () => { tracePage -= 1; renderTraceTable(); };
+    if (traceNextBtn) traceNextBtn.onclick = () => { tracePage += 1; renderTraceTable(); };
+    await renderTrace();
+  }
+
+  const toolCallsSearch = $("#tool-calls-search");
+  const toolCallsStatus = $("#tool-calls-status-filter");
+  const toolCallsPageSize = $("#tool-calls-page-size");
+  const toolCallsPrev = $("#tool-calls-prev");
+  const toolCallsNext = $("#tool-calls-next");
+  if (toolCallsSearch) toolCallsSearch.oninput = () => { toolCallsPage = 1; renderToolCalls(); };
+  if (toolCallsStatus) toolCallsStatus.onchange = () => { toolCallsPage = 1; renderToolCalls(); };
+  if (toolCallsPageSize) toolCallsPageSize.onchange = () => { toolCallsPage = 1; renderToolCalls(); };
+  if (toolCallsPrev) toolCallsPrev.onclick = () => { toolCallsPage -= 1; renderToolCalls(); };
+  if (toolCallsNext) toolCallsNext.onclick = () => { toolCallsPage += 1; renderToolCalls(); };
+  renderToolCalls();
 }
 
 // ---------------------------------------------------------------------------

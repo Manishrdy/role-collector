@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from job_agent.config import load_config
 from job_agent.db import repo
 from job_agent.db.migrate import migrate
 from job_agent.dedupe import embeddings as embedding_mod
@@ -227,3 +228,106 @@ def test_exact_idempotency_short_circuits_on_repeat_run(
     # No new jobs row was inserted; both source URLs are recorded.
     assert n_jobs == 1
     assert n_sources == 2
+
+
+def test_save_jobs_batch_respects_min_max_and_keeps_partial_open(
+    isolated_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    migrate()
+    cfg = load_config().model_copy(deep=True)
+    cfg.agent_loop.batch_min_jobs = 3
+    cfg.agent_loop.batch_max_jobs = 4
+    monkeypatch.setattr(nodes, "load_config", lambda: cfg)
+    monkeypatch.setattr(repo, "touch_existing_job", lambda **_: None)
+
+    run_id = repo.start_search_run(source_type="test", config_snapshot={})
+    cycle_id = repo.start_agent_cycle(search_run_id=run_id, config_snapshot={})
+    batch_id = repo.create_job_batch(search_run_id=run_id, agent_cycle_id=cycle_id, metadata={"t": 1})
+
+    def _exact(url: str) -> dict[str, object]:
+        return {
+            "url": url,
+            "canonical_url": url,
+            "source_type": "ats_google_search",
+            "source_query": "q",
+            "exact_dup_of_job_id": 42,
+        }
+
+    state: AgentState = {
+        "run_id": run_id,
+        "extracted_jobs": [_exact("https://example.com/1"), _exact("https://example.com/2")],
+        "runtime": {"batch_id": batch_id, "batch_current_count": 0, "agent_cycle_id": cycle_id},
+    }
+    state = nodes.save_jobs_node(state)
+    assert state["runtime"]["batch_id"] == batch_id
+    assert state["runtime"]["batch_current_count"] == 2
+
+    with sqlite3.connect(isolated_db) as conn:
+        row = conn.execute("SELECT status, job_count FROM job_batches WHERE id = ?", (batch_id,)).fetchone()
+    assert row == ("open", 0)
+
+    state["extracted_jobs"] = [
+        _exact("https://example.com/3"),
+        _exact("https://example.com/4"),
+        _exact("https://example.com/5"),
+    ]
+    state = nodes.save_jobs_node(state)
+    next_batch_id = state["runtime"]["batch_id"]
+    assert next_batch_id is not None and next_batch_id != batch_id
+    assert state["runtime"]["batch_current_count"] == 1
+
+    with sqlite3.connect(isolated_db) as conn:
+        first = conn.execute("SELECT status, job_count FROM job_batches WHERE id = ?", (batch_id,)).fetchone()
+        second = conn.execute("SELECT status, job_count FROM job_batches WHERE id = ?", (next_batch_id,)).fetchone()
+    assert first == ("flushed", 4)
+    assert second == ("open", 0)
+
+
+def test_save_jobs_batch_finalize_flushes_under_min(
+    isolated_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    migrate()
+    cfg = load_config().model_copy(deep=True)
+    cfg.agent_loop.batch_min_jobs = 3
+    cfg.agent_loop.batch_max_jobs = 4
+    monkeypatch.setattr(nodes, "load_config", lambda: cfg)
+    monkeypatch.setattr(repo, "touch_existing_job", lambda **_: None)
+
+    run_id = repo.start_search_run(source_type="test", config_snapshot={})
+    cycle_id = repo.start_agent_cycle(search_run_id=run_id, config_snapshot={})
+    batch_id = repo.create_job_batch(search_run_id=run_id, agent_cycle_id=cycle_id, metadata={"t": 1})
+
+    state: AgentState = {
+        "run_id": run_id,
+        "extracted_jobs": [
+            {
+                "url": "https://example.com/final-1",
+                "canonical_url": "https://example.com/final-1",
+                "source_type": "ats_google_search",
+                "source_query": "q",
+                "exact_dup_of_job_id": 42,
+            },
+            {
+                "url": "https://example.com/final-2",
+                "canonical_url": "https://example.com/final-2",
+                "source_type": "ats_google_search",
+                "source_query": "q",
+                "exact_dup_of_job_id": 42,
+            },
+        ],
+        "runtime": {
+            "batch_id": batch_id,
+            "batch_current_count": 0,
+            "agent_cycle_id": cycle_id,
+            "finalize_batches": True,
+        },
+    }
+    state = nodes.save_jobs_node(state)
+    assert state["runtime"]["batch_id"] is None
+    assert state["runtime"]["batch_current_count"] == 0
+
+    with sqlite3.connect(isolated_db) as conn:
+        row = conn.execute("SELECT status, job_count FROM job_batches WHERE id = ?", (batch_id,)).fetchone()
+    assert row == ("flushed", 2)

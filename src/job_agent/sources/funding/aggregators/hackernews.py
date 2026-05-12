@@ -55,16 +55,17 @@ def fetch_hackernews_funding(
     out: list[FundingEventCandidate] = []
     seen_object_ids: set[str] = set()
     for q in queries:
+        numeric_filter = "created_at_i>" + str(int(datetime.now(tz=UTC).timestamp()) - 7 * 86400)
+        params: dict[str, str | int] = {
+            "query": q,
+            "tags": "story",
+            "hitsPerPage": hits_per_query,
+            "numericFilters": numeric_filter,
+        }
         try:
             resp = sess.get(
                 _API,
-                params={
-                    "query": q,
-                    "tags": "story",
-                    "hitsPerPage": hits_per_query,
-                    "numericFilters": "created_at_i>"  # last ~7 days
-                    + str(int(datetime.now(tz=UTC).timestamp()) - 7 * 86400),
-                },
+                params=params,
                 timeout=request_timeout,
             )
             resp.raise_for_status()

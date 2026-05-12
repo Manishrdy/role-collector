@@ -1,4 +1,4 @@
-.PHONY: setup install playwright ollama run review test lint format clean migrate help
+.PHONY: setup install playwright ollama run worker review test lint format clean migrate help
 
 VENV ?= .venv
 PY := $(VENV)/bin/python
@@ -12,6 +12,7 @@ help:
 	@echo "  ollama      - pull qwen3:8b via ollama"
 	@echo "  migrate     - create SQLite schema if not exists"
 	@echo "  run         - run the agent end-to-end (LangGraph workflow)"
+	@echo "  worker      - run the autonomous config-driven worker"
 	@echo "  review      - launch the FastAPI review dashboard on http://127.0.0.1:8501"
 	@echo "  test        - run pytest"
 	@echo "  lint        - ruff + mypy"
@@ -32,19 +33,22 @@ setup: install playwright
 	@echo ""
 	@echo "venv ready. next steps:"
 	@echo "  1. cp .env.example .env  and fill in Langfuse keys"
-	@echo "  2. make ollama   # pulls qwen3:8b (~5GB)"
+	@echo "  2. make ollama   # pulls deepseek-r1:8b"
 	@echo "  3. make migrate  # creates data/jobs.db"
 	@echo "  4. make run"
 
 ollama:
 	@command -v ollama >/dev/null 2>&1 || { echo "ollama not found. install from https://ollama.com"; exit 1; }
-	ollama pull qwen3:8b
+	ollama pull deepseek-r1:8b
 
 migrate:
 	$(PY) -m job_agent.db.migrate
 
 run:
 	$(PY) -m job_agent.cli run
+
+worker:
+	$(PY) -m job_agent.cli worker
 
 review:
 	$(VENV)/bin/uvicorn ui.server:app --host 127.0.0.1 --port 8501 --reload

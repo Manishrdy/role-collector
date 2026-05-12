@@ -29,6 +29,20 @@ def _post_schema_migrations(conn: sqlite3.Connection) -> None:
         )
     if not _column_exists(conn, "companies", "last_polled_at"):
         conn.execute("ALTER TABLE companies ADD COLUMN last_polled_at TEXT")
+    if not _column_exists(conn, "jobs", "location_normalized_json"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN location_normalized_json TEXT")
+    if not _column_exists(conn, "jobs", "role_family"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN role_family TEXT")
+    if not _column_exists(conn, "jobs", "role_match_status"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN role_match_status TEXT")
+    if not _column_exists(conn, "jobs", "level"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN level TEXT")
+    if not _column_exists(conn, "jobs", "level_confidence"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN level_confidence REAL")
+    if not _column_exists(conn, "job_sources", "batch_id"):
+        conn.execute("ALTER TABLE job_sources ADD COLUMN batch_id INTEGER")
+    if not _column_exists(conn, "linkedin_posts", "company_id"):
+        conn.execute("ALTER TABLE linkedin_posts ADD COLUMN company_id INTEGER")
 
 
 def migrate(db_path: str | Path | None = None) -> Path:

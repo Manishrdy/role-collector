@@ -20,7 +20,7 @@ class AgentSection(BaseModel):
 
 class LLMSection(BaseModel):
     provider: Literal["ollama"] = "ollama"
-    model: str = "qwen3:8b"
+    model: str = "deepseek-r1:8b"
     temperature: float = 0.0
     max_context_chars_per_page: int = 12000
     request_timeout_seconds: float = 90.0
@@ -152,6 +152,34 @@ class TracingSection(BaseModel):
     log_resume_text: bool = False
 
 
+class AgentLoopCadenceSection(BaseModel):
+    ats_api_hours: float = 4.0
+    google_hours: float = 4.0
+    funding_hours: float = 8.0
+    watchlist_hours: float = 4.0
+    linkedin_hours: float = 8.0
+
+
+class AgentLoopSection(BaseModel):
+    enabled: bool = True
+    react_enabled: bool = True
+    react_llm_enabled: bool = False
+    react_llm_sample_rate: float = Field(default=1.0, ge=0.0, le=1.0)
+    react_max_steps: int = 24
+    intelligence_llm_enabled: bool = False
+    cycle_reflection_llm_enabled: bool = False
+    cycle_sleep_hours: float = 4.0
+    batch_min_jobs: int = 5
+    batch_max_jobs: int = 10
+    max_cycle_runtime_minutes: int = 90
+    max_pages_per_cycle: int = 150
+    max_google_queries_per_cycle: int = 10
+    backoff_on_block_hours: float = 6.0
+    fatal_retry_sleep_minutes: float = 15.0
+    memory_markdown_enabled: bool = True
+    cadence: AgentLoopCadenceSection = Field(default_factory=AgentLoopCadenceSection)
+
+
 class AppConfig(BaseModel):
     agent: AgentSection = Field(default_factory=AgentSection)
     llm: LLMSection = Field(default_factory=LLMSection)
@@ -162,6 +190,7 @@ class AppConfig(BaseModel):
     dedupe: DedupeSection = Field(default_factory=DedupeSection)
     storage: StorageSection = Field(default_factory=StorageSection)
     tracing: TracingSection = Field(default_factory=TracingSection)
+    agent_loop: AgentLoopSection = Field(default_factory=AgentLoopSection)
     allowlist_domains: list[str] = Field(default_factory=list)
 
     # Resolved from environment, not config.yaml

@@ -14,6 +14,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from job_agent.agent.classifiers import OllamaClassifierClient
+from job_agent.agent.intelligence import classify_job_with_source, intelligence_json
 from job_agent.browser.page_fetch import FetchedPage, fetch_pages
 from job_agent.browser.safety import normalize_candidate_url
 from job_agent.config import load_config
@@ -29,6 +31,15 @@ from job_agent.sources import queries as q_mod
 from job_agent.sources.ats_search import run_ats_search
 
 log = logging.getLogger(__name__)
+
+
+def _set_source_signal(state: AgentState, source: str, signal: dict[str, Any]) -> None:
+    runtime = state.setdefault("runtime", {})
+    if not isinstance(runtime, dict):
+        return
+    signals = runtime.setdefault("source_signals", {})
+    if isinstance(signals, dict):
+        signals[source] = signal
 
 
 def _event(state: AgentState, event_type: str, message: str) -> None:
@@ -52,6 +63,9 @@ def load_config_node(state: AgentState) -> AgentState:
 
 
 def create_search_run_node(state: AgentState) -> AgentState:
+    if state.get("run_id") is not None:
+        _event(state, "run_started", f"using existing search_run id={state['run_id']}")
+        return state
     cfg = load_config()
     run_id = repo.start_search_run(
         source_type="agent_run",
@@ -128,6 +142,10 @@ def run_ats_api_discovery_node(state: AgentState) -> AgentState:
     rate limiter) only adds long-tail companies we don't know about.
     """
     cfg = load_config()
+    runtime = state.get("runtime", {}) or {}
+    if runtime.get("dry_run"):
+        _event(state, "ats_api_discovery", "dry_run: skipping ATS API requests")
+        return state
     if not cfg.sources.ats_api_discovery.enabled:
         _event(state, "ats_api_discovery", "disabled in config")
         return state
@@ -194,6 +212,16 @@ def run_ats_google_search_node(state: AgentState) -> AgentState:
         search_run_id=run_id,
         debug_dump_dir=debug_dir,
     )
+    _set_source_signal(
+        state,
+        "ats_google_search",
+        {
+            "blocked": bool(stats.google_blocked_at),
+            "queries_blocked": stats.queries_blocked,
+            "google_blocked_at": stats.google_blocked_at,
+            "self_stopped_at": stats.self_stopped_at,
+        },
+    )
 
     state["candidate_urls"] = [asdict(c) for c in candidates]
     _event(
@@ -212,6 +240,10 @@ def run_ats_google_search_node(state: AgentState) -> AgentState:
 
 def run_funding_discovery_node(state: AgentState) -> AgentState:
     cfg = load_config()
+    runtime = state.get("runtime", {}) or {}
+    if runtime.get("dry_run"):
+        _event(state, "funding_discovery", "dry_run: skipping funding aggregators")
+        return state
     if not cfg.sources.funding_discovery.enabled:
         _event(state, "funding_discovery", "disabled in config")
         return state
@@ -233,6 +265,10 @@ def run_funding_discovery_node(state: AgentState) -> AgentState:
 
 def run_funding_resolvers_node(state: AgentState) -> AgentState:
     cfg = load_config()
+    runtime = state.get("runtime", {}) or {}
+    if runtime.get("dry_run"):
+        _event(state, "funding_resolvers", "dry_run: skipping company resolvers")
+        return state
     if not cfg.sources.funding_discovery.enabled:
         return state
     if not cfg.sources.funding_discovery.resolvers.enabled:
@@ -269,6 +305,10 @@ def run_watchlist_node(state: AgentState) -> AgentState:
     can be JS-rendered without paying per-company Playwright startup.
     """
     cfg = load_config()
+    runtime = state.get("runtime", {}) or {}
+    if runtime.get("dry_run"):
+        _event(state, "watchlist", "dry_run: skipping watchlist polling")
+        return state
     if not cfg.sources.funding_discovery.enabled:
         return state
     from job_agent.sources.funding.resolvers._fetch import FetchFallback
@@ -337,6 +377,10 @@ def run_watchlist_node(state: AgentState) -> AgentState:
 
 def run_linkedin_public_search_node(state: AgentState) -> AgentState:
     cfg = load_config()
+    runtime = state.get("runtime", {}) or {}
+    if runtime.get("dry_run"):
+        _event(state, "linkedin_public_search", "dry_run: skipping LinkedIn search")
+        return state
     if not cfg.sources.linkedin_public_search.enabled:
         _event(state, "linkedin_public_search", "disabled in config")
         return state
@@ -344,6 +388,16 @@ def run_linkedin_public_search_node(state: AgentState) -> AgentState:
 
     run_id = state.get("run_id")
     stats = discover_linkedin_posts(cfg, search_run_id=run_id)
+    _set_source_signal(
+        state,
+        "linkedin_public_search",
+        {
+            "blocked": bool(stats.posts_blocked > 0 or (stats.stop_reason or "").lower().find("captcha") >= 0),
+            "posts_blocked": stats.posts_blocked,
+            "stopped_early": stats.stopped_early,
+            "stop_reason": stats.stop_reason,
+        },
+    )
     _event(
         state,
         "linkedin_public_search",
@@ -749,6 +803,7 @@ def semantic_duplicate_check_node(state: AgentState) -> AgentState:
 
 
 def save_jobs_node(state: AgentState) -> AgentState:
+    cfg = load_config()
     extracted = state.get("extracted_jobs", []) or []
     if not extracted:
         _event(state, "save_jobs", "no extracted jobs to save")
@@ -756,93 +811,170 @@ def save_jobs_node(state: AgentState) -> AgentState:
         return state
 
     run_id = state.get("run_id")
+    runtime = state.get("runtime", {}) or {}
+    intelligence_metrics = runtime.setdefault(
+        "intelligence_metrics",
+        {"classifier_calls": 0, "classifier_valid": 0, "classifier_fallbacks": 0},
+    )
+    active_batch_id = runtime.get("batch_id")
+    agent_cycle_id = runtime.get("agent_cycle_id")
+    batch_min = max(1, int(cfg.agent_loop.batch_min_jobs))
+    batch_max = max(1, int(cfg.agent_loop.batch_max_jobs))
+    effective_batch_min = min(batch_min, batch_max)
+    batch_current_count = int(runtime.get("batch_current_count", 0) or 0) if active_batch_id is not None else 0
+    finalize_batches = bool(runtime.get("finalize_batches", False))
+    batch_counts: dict[int, int] = {}
     saved_ids: list[int] = []
     inserted = updated = needs_review = 0
     exact_dups = possible_dups = hard_dups = 0
     duplicate_candidate_rows = 0
+    classifier: OllamaClassifierClient | None = None
+    if cfg.agent_loop.intelligence_llm_enabled and not runtime.get("dry_run"):
+        classifier = OllamaClassifierClient(cfg)
 
-    for record in extracted:
+    def _ensure_batch() -> int | None:
+        nonlocal active_batch_id, batch_current_count
+        if active_batch_id is None and run_id is not None:
+            active_batch_id = repo.create_job_batch(
+                search_run_id=run_id,
+                agent_cycle_id=agent_cycle_id,
+                metadata={"created_by": "save_jobs_node"},
+            )
+            batch_current_count = 0
+        return int(active_batch_id) if active_batch_id is not None else None
+
+    def _record_batch_save(batch: int | None) -> None:
+        nonlocal active_batch_id, batch_current_count
+        if batch is None:
+            return
+        batch_counts[batch] = batch_counts.get(batch, 0) + 1
+        batch_current_count += 1
+        if batch_current_count >= batch_max:
+            repo.finish_job_batch(batch, job_count=batch_current_count)
+            active_batch_id = None
+            batch_current_count = 0
+
+    try:
+        for record in extracted:
+            current_batch_id = _ensure_batch()
         # Phase-4 layer 1: exact-duplicate short-circuit. Don't insert a
         # new jobs row — bump the existing row's last_seen_at and append a
         # job_sources audit entry.
-        exact_dup_id = record.get("exact_dup_of_job_id")
-        if exact_dup_id is not None:
+            exact_dup_id = record.get("exact_dup_of_job_id")
+            if exact_dup_id is not None:
+                try:
+                    repo.touch_existing_job(
+                        job_id=exact_dup_id,
+                        raw_url=record["url"],
+                        canonical_url=record["canonical_url"],
+                        source_type=record["source_type"],
+                        source_query=record.get("source_query"),
+                        search_run_id=run_id,
+                        batch_id=current_batch_id,
+                    )
+                except Exception as e:
+                    log.warning(
+                        "touch_existing_job failed for %s: %s", record.get("url"), e
+                    )
+                    continue
+                saved_ids.append(int(exact_dup_id))
+                exact_dups += 1
+                _record_batch_save(current_batch_id)
+                continue
+
             try:
-                repo.touch_existing_job(
-                    job_id=exact_dup_id,
-                    raw_url=record["url"],
+                job = ExtractedJob.model_validate(record["job"])
+            except Exception as e:
+                log.warning("invalid extracted job for %s: %s", record.get("url"), e)
+                continue
+            if classifier is not None and isinstance(intelligence_metrics, dict):
+                intelligence_metrics["classifier_calls"] = int(intelligence_metrics.get("classifier_calls", 0)) + 1
+            intel, intel_source = classify_job_with_source(job, cfg, classifier=classifier)
+            if classifier is not None and isinstance(intelligence_metrics, dict):
+                if intel_source == "llm":
+                    intelligence_metrics["classifier_valid"] = int(intelligence_metrics.get("classifier_valid", 0)) + 1
+                else:
+                    intelligence_metrics["classifier_fallbacks"] = int(intelligence_metrics.get("classifier_fallbacks", 0)) + 1
+            try:
+                result = repo.upsert_job(
+                    extracted=job,
                     canonical_url=record["canonical_url"],
+                    raw_url=record["url"],
                     source_type=record["source_type"],
                     source_query=record.get("source_query"),
                     search_run_id=run_id,
+                    needs_review=bool(record.get("needs_review")),
+                    description_hash=record.get("description_hash"),
+                    description_embedding=record.get("embedding"),
+                    duplicate_status=record.get("duplicate_status", "new"),
+                    duplicate_of_job_id=record.get("duplicate_of_job_id"),
+                    duplicate_score=record.get("duplicate_score"),
+                    batch_id=current_batch_id,
+                    location_normalized_json=intelligence_json(intel),
+                    role_family=intel.role_family,
+                    role_match_status=intel.role_match_status,
+                    level=intel.level,
+                    level_confidence=intel.level_confidence,
                 )
             except Exception as e:
-                log.warning(
-                    "touch_existing_job failed for %s: %s", record.get("url"), e
-                )
+                log.warning("upsert failed for %s: %s", record.get("url"), e)
                 continue
-            saved_ids.append(int(exact_dup_id))
-            exact_dups += 1
-            continue
 
-        try:
-            job = ExtractedJob.model_validate(record["job"])
-        except Exception as e:
-            log.warning("invalid extracted job for %s: %s", record.get("url"), e)
-            continue
-        try:
-            result = repo.upsert_job(
-                extracted=job,
-                canonical_url=record["canonical_url"],
-                raw_url=record["url"],
-                source_type=record["source_type"],
-                source_query=record.get("source_query"),
-                search_run_id=run_id,
-                needs_review=bool(record.get("needs_review")),
-                description_hash=record.get("description_hash"),
-                description_embedding=record.get("embedding"),
-                duplicate_status=record.get("duplicate_status", "new"),
-                duplicate_of_job_id=record.get("duplicate_of_job_id"),
-                duplicate_score=record.get("duplicate_score"),
-            )
-        except Exception as e:
-            log.warning("upsert failed for %s: %s", record.get("url"), e)
-            continue
+            saved_ids.append(result.job_id)
+            _record_batch_save(current_batch_id)
+            if result.inserted:
+                inserted += 1
+            else:
+                updated += 1
+            if record.get("needs_review"):
+                needs_review += 1
+            if record.get("duplicate_status") == "duplicate":
+                hard_dups += 1
+            elif record.get("duplicate_status") == "possible_duplicate":
+                possible_dups += 1
 
-        saved_ids.append(result.job_id)
-        if result.inserted:
-            inserted += 1
-        else:
-            updated += 1
-        if record.get("needs_review"):
-            needs_review += 1
-        if record.get("duplicate_status") == "duplicate":
-            hard_dups += 1
-        elif record.get("duplicate_status") == "possible_duplicate":
-            possible_dups += 1
+            # Persist per-pair scores for any candidate that scored above a
+            # noise floor. Keeps the duplicate_candidates table small while
+            # capturing enough audit data for the review dashboard.
+            for cand in record.get("scored_candidates", []) or []:
+                if cand["duplicate_score"] < 0.5:
+                    continue
+                try:
+                    repo.persist_duplicate_candidate(
+                        job_id=result.job_id,
+                        candidate_job_id=cand["candidate_job_id"],
+                        duplicate_score=cand["duplicate_score"],
+                        company_score=cand["company_score"],
+                        title_score=cand["title_score"],
+                        description_score=cand["description_score"],
+                        location_score=cand["location_score"],
+                        skills_score=cand["skills_score"],
+                        decision=cand["decision"],
+                    )
+                    duplicate_candidate_rows += 1
+                except Exception as e:
+                    log.warning("persist_duplicate_candidate failed: %s", e)
+    finally:
+        if classifier is not None:
+            classifier.close()
 
-        # Persist per-pair scores for any candidate that scored above a
-        # noise floor. Keeps the duplicate_candidates table small while
-        # capturing enough audit data for the review dashboard.
-        for cand in record.get("scored_candidates", []) or []:
-            if cand["duplicate_score"] < 0.5:
-                continue
-            try:
-                repo.persist_duplicate_candidate(
-                    job_id=result.job_id,
-                    candidate_job_id=cand["candidate_job_id"],
-                    duplicate_score=cand["duplicate_score"],
-                    company_score=cand["company_score"],
-                    title_score=cand["title_score"],
-                    description_score=cand["description_score"],
-                    location_score=cand["location_score"],
-                    skills_score=cand["skills_score"],
-                    decision=cand["decision"],
-                )
-                duplicate_candidate_rows += 1
-            except Exception as e:
-                log.warning("persist_duplicate_candidate failed: %s", e)
+    if (
+        finalize_batches
+        and active_batch_id is not None
+        and batch_current_count > 0
+        and batch_current_count < effective_batch_min
+    ):
+        repo.finish_job_batch(int(active_batch_id), job_count=batch_current_count)
+        active_batch_id = None
+        batch_current_count = 0
 
+    runtime["batch_id"] = int(active_batch_id) if active_batch_id is not None else None
+    runtime["batch_current_count"] = int(batch_current_count)
+
+    state["job_batches"] = [
+        {"batch_id": batch_id, "job_count": count}
+        for batch_id, count in sorted(batch_counts.items())
+    ]
     state["saved_jobs"] = saved_ids
     _event(
         state,

@@ -119,8 +119,9 @@ def api_overview() -> JSONResponse:
         ).fetchone()["n"]
         latest = conn.execute(
             """
-            SELECT id, company_name, title, location, ats_type, duplicate_status,
-                   first_seen_at, apply_url, canonical_url
+            SELECT id, company_name, title, location, location_normalized_json,
+                   role_family, role_match_status, level,
+                   ats_type, duplicate_status, first_seen_at, apply_url, canonical_url
             FROM jobs
             ORDER BY id DESC
             LIMIT 10
@@ -179,7 +180,9 @@ def api_jobs(
         total = conn.execute(f"SELECT COUNT(*) AS n FROM jobs {where_sql}", params).fetchone()["n"]
         rows = conn.execute(
             f"""
-            SELECT id, company_name, title, location, remote_type, ats_type,
+            SELECT id, company_name, title, location, location_normalized_json,
+                   role_family, role_match_status, level,
+                   remote_type, ats_type,
                    duplicate_status, needs_review, first_seen_at, apply_url,
                    canonical_url
             FROM jobs
@@ -231,7 +234,7 @@ def api_job_detail(job_id: int) -> JSONResponse:
             raise HTTPException(status_code=404, detail="job not found")
         sources = conn.execute(
             """
-            SELECT source_type, source_url, canonical_source_url, source_query, found_at
+            SELECT source_type, batch_id, source_url, canonical_source_url, source_query, found_at
             FROM job_sources WHERE job_id = ? ORDER BY id DESC
             """,
             (job_id,),
@@ -382,10 +385,79 @@ def api_runs() -> JSONResponse:
             FROM page_fetches ORDER BY id DESC LIMIT 200
             """
         ).fetchall()
+        cycles = conn.execute(
+            """
+            SELECT id, search_run_id, status, started_at, finished_at,
+                   sleep_until, error_message, summary_json
+            FROM agent_cycles ORDER BY id DESC LIMIT 100
+            """
+        ).fetchall()
+        batches = conn.execute(
+            """
+            SELECT id, search_run_id, agent_cycle_id, status, created_at,
+                   flushed_at, job_count, metadata_json
+            FROM job_batches ORDER BY id DESC LIMIT 100
+            """
+        ).fetchall()
+        source_stats = conn.execute(
+            """
+            SELECT source_name, last_status, last_started_at, last_finished_at,
+                   backoff_until, runs_total, successes_total, failures_total,
+                   candidates_total, jobs_saved_total, metadata_json
+            FROM agent_source_stats ORDER BY source_name
+            """
+        ).fetchall()
+        tool_calls = conn.execute(
+            """
+            SELECT id, agent_cycle_id, tool_name, source_name, status,
+                   latency_ms, error_message, created_at
+            FROM agent_tool_calls ORDER BY id DESC LIMIT 200
+            """
+        ).fetchall()
     return JSONResponse(
         {
             "runs": [_row_to_dict(r) for r in runs],
             "events": [_row_to_dict(r) for r in events],
             "fetches": [_row_to_dict(r) for r in fetches],
+            "cycles": [_row_to_dict(r) for r in cycles],
+            "batches": [_row_to_dict(r) for r in batches],
+            "source_stats": [_row_to_dict(r) for r in source_stats],
+            "tool_calls": [_row_to_dict(r) for r in tool_calls],
+        }
+    )
+
+
+@app.get("/api/runs/{cycle_id}/react-trace")
+def api_run_react_trace(cycle_id: int) -> JSONResponse:
+    with _connect() as conn:
+        cycle = conn.execute(
+            """
+            SELECT id, search_run_id, status, started_at, finished_at, summary_json
+            FROM agent_cycles
+            WHERE id = ?
+            """,
+            (cycle_id,),
+        ).fetchone()
+        if cycle is None:
+            raise HTTPException(status_code=404, detail="cycle not found")
+        tool_calls = conn.execute(
+            """
+            SELECT id, tool_name, source_name, status, latency_ms, error_message, created_at
+            FROM agent_tool_calls
+            WHERE agent_cycle_id = ?
+            ORDER BY id ASC
+            """,
+            (cycle_id,),
+        ).fetchall()
+    cycle_row = _row_to_dict(cycle)
+    summary = repo.safe_json_loads(cycle_row.get("summary_json")) or {}
+    react_trace = summary.get("react_trace", [])
+    if not isinstance(react_trace, list):
+        react_trace = []
+    return JSONResponse(
+        {
+            "cycle": cycle_row,
+            "react_trace": react_trace,
+            "tool_calls": [_row_to_dict(r) for r in tool_calls],
         }
     )

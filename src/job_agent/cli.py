@@ -257,6 +257,40 @@ def list_watchlist() -> None:
     console.print(table)
 
 
+@app.command()
+def worker(
+    once: bool = typer.Option(
+        False,
+        "--once",
+        help="Run one autonomous worker cycle and exit instead of sleeping forever.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Create cycle/batch records but skip browser/network work inside the pipeline.",
+    ),
+) -> None:
+    """Run the autonomous config-driven sourcing worker."""
+    _configure_logging()
+    from job_agent.agent.worker import run_one_cycle, run_worker_forever
+
+    if once:
+        result = run_one_cycle(dry_run=dry_run)
+        table = Table(title="worker cycle summary", show_header=True, header_style="bold")
+        table.add_column("metric")
+        table.add_column("value")
+        table.add_row("cycle_id", str(result.cycle_id))
+        table.add_row("search_run_id", str(result.search_run_id))
+        table.add_row("status", result.status)
+        table.add_row("sleep_seconds", f"{result.sleep_seconds:.0f}")
+        for key, value in sorted(result.summary.items()):
+            table.add_row(str(key), str(value))
+        console.print(table)
+        return
+    console.print("[cyan]starting autonomous worker[/cyan] (Ctrl-C to stop)")
+    run_worker_forever(dry_run=dry_run)
+
+
 def main() -> None:
     try:
         app()

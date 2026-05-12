@@ -16,6 +16,7 @@ class AgentState(TypedDict, total=False):
     fetched_pages: list[dict[str, Any]]
     extracted_jobs: list[dict[str, Any]]
     saved_jobs: list[int]
+    job_batches: list[dict[str, Any]]
     duplicate_candidates: list[dict[str, Any]]
     errors: list[dict[str, Any]]
     summary: dict[str, Any]

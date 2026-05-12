@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS funding_events (
 
 CREATE TABLE IF NOT EXISTS linkedin_posts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id INTEGER,
   post_url TEXT UNIQUE,
   canonical_url TEXT,
   author_name TEXT,
@@ -59,7 +60,8 @@ CREATE TABLE IF NOT EXISTS linkedin_posts (
   source_query TEXT,
   confidence REAL,
   found_at TEXT NOT NULL,
-  processed_status TEXT DEFAULT 'new'
+  processed_status TEXT DEFAULT 'new',
+  FOREIGN KEY(company_id) REFERENCES companies(id)
 );
 
 CREATE TABLE IF NOT EXISTS jobs (
@@ -70,6 +72,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   title TEXT NOT NULL,
   normalized_title TEXT NOT NULL,
   location TEXT,
+  location_normalized_json TEXT,
   remote_type TEXT,
   canonical_url TEXT,
   apply_url TEXT,
@@ -83,7 +86,11 @@ CREATE TABLE IF NOT EXISTS jobs (
   description_hash TEXT,
   description_embedding_json TEXT,
   skills_json TEXT,
+  role_family TEXT,
+  role_match_status TEXT,
   seniority TEXT,
+  level TEXT,
+  level_confidence REAL,
   employment_type TEXT,
   salary_text TEXT,
   fit_score REAL,
@@ -101,9 +108,36 @@ CREATE TABLE IF NOT EXISTS jobs (
   FOREIGN KEY(duplicate_of_job_id) REFERENCES jobs(id)
 );
 
+CREATE TABLE IF NOT EXISTS agent_cycles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  search_run_id INTEGER,
+  status TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  sleep_until TEXT,
+  summary_json TEXT,
+  error_message TEXT,
+  config_json TEXT,
+  FOREIGN KEY(search_run_id) REFERENCES search_runs(id)
+);
+
+CREATE TABLE IF NOT EXISTS job_batches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  search_run_id INTEGER,
+  agent_cycle_id INTEGER,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  flushed_at TEXT,
+  job_count INTEGER NOT NULL DEFAULT 0,
+  metadata_json TEXT,
+  FOREIGN KEY(search_run_id) REFERENCES search_runs(id),
+  FOREIGN KEY(agent_cycle_id) REFERENCES agent_cycles(id)
+);
+
 CREATE TABLE IF NOT EXISTS job_sources (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   job_id INTEGER,
+  batch_id INTEGER,
   source_type TEXT NOT NULL,
   source_url TEXT,
   canonical_source_url TEXT,
@@ -112,6 +146,7 @@ CREATE TABLE IF NOT EXISTS job_sources (
   found_at TEXT NOT NULL,
   raw_snippet TEXT,
   FOREIGN KEY(job_id) REFERENCES jobs(id),
+  FOREIGN KEY(batch_id) REFERENCES job_batches(id),
   FOREIGN KEY(search_run_id) REFERENCES search_runs(id)
 );
 
@@ -156,6 +191,47 @@ CREATE TABLE IF NOT EXISTS agent_events (
   FOREIGN KEY(search_run_id) REFERENCES search_runs(id)
 );
 
+CREATE TABLE IF NOT EXISTS agent_tool_calls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_cycle_id INTEGER,
+  search_run_id INTEGER,
+  tool_name TEXT NOT NULL,
+  source_name TEXT,
+  status TEXT NOT NULL,
+  input_json TEXT,
+  output_json TEXT,
+  error_message TEXT,
+  latency_ms INTEGER,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(agent_cycle_id) REFERENCES agent_cycles(id),
+  FOREIGN KEY(search_run_id) REFERENCES search_runs(id)
+);
+
+CREATE TABLE IF NOT EXISTS agent_source_stats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_name TEXT NOT NULL,
+  last_started_at TEXT,
+  last_finished_at TEXT,
+  last_status TEXT,
+  backoff_until TEXT,
+  runs_total INTEGER NOT NULL DEFAULT 0,
+  successes_total INTEGER NOT NULL DEFAULT 0,
+  failures_total INTEGER NOT NULL DEFAULT 0,
+  candidates_total INTEGER NOT NULL DEFAULT 0,
+  jobs_saved_total INTEGER NOT NULL DEFAULT 0,
+  metadata_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS agent_memory (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  memory_key TEXT NOT NULL,
+  memory_scope TEXT NOT NULL,
+  value_json TEXT NOT NULL,
+  confidence REAL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_canonical_url
   ON jobs(canonical_url)
   WHERE canonical_url IS NOT NULL;
@@ -181,3 +257,15 @@ CREATE INDEX IF NOT EXISTS idx_companies_normalized_name
 
 CREATE INDEX IF NOT EXISTS idx_funding_company
   ON funding_events(normalized_company_name);
+
+CREATE INDEX IF NOT EXISTS idx_agent_cycles_status
+  ON agent_cycles(status);
+
+CREATE INDEX IF NOT EXISTS idx_job_sources_batch
+  ON job_sources(batch_id);
+
+CREATE INDEX IF NOT EXISTS idx_agent_source_stats_source
+  ON agent_source_stats(source_name);
+
+CREATE INDEX IF NOT EXISTS idx_agent_memory_key_scope
+  ON agent_memory(memory_key, memory_scope);

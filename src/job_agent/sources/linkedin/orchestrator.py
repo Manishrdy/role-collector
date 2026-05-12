@@ -121,6 +121,13 @@ def discover_linkedin_posts(
 
     # Stage 4: persist + seed companies.
     for post in extracted:
+        company_id: int | None = None
+        if post.company_name:
+            try:
+                company_id = repo.upsert_company(name=post.company_name)
+            except Exception as e:
+                log.exception("[linkedin] upsert_company failed for %s", post.company_name)
+                stats.errors.append(f"upsert_company {post.company_name}: {e}")
         try:
             r = repo.upsert_linkedin_post(
                 post_url=post.post_url,
@@ -131,6 +138,7 @@ def discover_linkedin_posts(
                 detected_role=post.detected_role,
                 confidence=post.extraction_confidence,
                 source_query="linkedin_public_search",
+                company_id=company_id,
             )
         except Exception as e:
             log.exception("[linkedin] persist post failed")
@@ -141,16 +149,8 @@ def discover_linkedin_posts(
         else:
             stats.posts_existing += 1
 
-        # If the post named a company, upsert it so the Phase-5 resolver
-        # chain picks it up on its next pass. We only create the company
-        # row — the resolver does the website / careers / ATS work.
-        if r.inserted and post.company_name:
-            try:
-                repo.upsert_company(name=post.company_name)
-                stats.companies_seeded += 1
-            except Exception as e:
-                log.exception("[linkedin] upsert_company failed for %s", post.company_name)
-                stats.errors.append(f"upsert_company {post.company_name}: {e}")
+        if r.inserted and company_id is not None:
+            stats.companies_seeded += 1
 
     log.info(
         "[linkedin] urls=%d ok=%d blocked=%d errored=%d hiring=%d inserted=%d "

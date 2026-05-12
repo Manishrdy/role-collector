@@ -21,6 +21,11 @@ EXPECTED_TABLES = {
     "duplicate_candidates",
     "page_fetches",
     "agent_events",
+    "agent_cycles",
+    "agent_tool_calls",
+    "agent_source_stats",
+    "agent_memory",
+    "job_batches",
 }
 
 
@@ -41,6 +46,27 @@ def test_migrate_creates_expected_indexes(isolated_db: Path) -> None:
     assert "idx_jobs_normalized_company" in names
     assert "idx_jobs_normalized_title" in names
     assert "idx_jobs_description_hash" in names
+    assert "idx_agent_source_stats_source" in names
+    assert "idx_agent_memory_key_scope" in names
+
+
+def test_migrate_creates_agent_columns(isolated_db: Path) -> None:
+    migrate()
+    with sqlite3.connect(isolated_db) as conn:
+        job_cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+        source_cols = {r[1] for r in conn.execute("PRAGMA table_info(job_sources)").fetchall()}
+        linkedin_cols = {
+            r[1] for r in conn.execute("PRAGMA table_info(linkedin_posts)").fetchall()
+        }
+    assert {
+        "location_normalized_json",
+        "role_family",
+        "role_match_status",
+        "level",
+        "level_confidence",
+    }.issubset(job_cols)
+    assert "batch_id" in source_cols
+    assert "company_id" in linkedin_cols
 
 
 def test_migrate_is_idempotent(isolated_db: Path) -> None:

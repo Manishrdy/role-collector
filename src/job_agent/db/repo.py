@@ -67,6 +67,112 @@ def start_search_run(
         return run_id
 
 
+def start_agent_cycle(
+    *,
+    search_run_id: int | None = None,
+    config_snapshot: dict[str, Any] | None = None,
+    db_path: str | Path | None = None,
+) -> int:
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO agent_cycles
+                (search_run_id, status, started_at, config_json)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                search_run_id,
+                "running",
+                _utc_now_iso(),
+                json.dumps(config_snapshot) if config_snapshot else None,
+            ),
+        )
+        cycle_id = cur.lastrowid
+        assert cycle_id is not None
+        return int(cycle_id)
+
+
+def finish_agent_cycle(
+    cycle_id: int,
+    *,
+    status: str,
+    summary: dict[str, Any] | None = None,
+    error_message: str | None = None,
+    sleep_until: str | None = None,
+    db_path: str | Path | None = None,
+) -> None:
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE agent_cycles
+               SET finished_at = ?, status = ?, summary_json = ?,
+                   error_message = ?, sleep_until = ?
+             WHERE id = ?
+            """,
+            (
+                _utc_now_iso(),
+                status,
+                json.dumps(summary) if summary is not None else None,
+                error_message,
+                sleep_until,
+                cycle_id,
+            ),
+        )
+
+
+def create_job_batch(
+    *,
+    search_run_id: int | None,
+    agent_cycle_id: int | None,
+    metadata: dict[str, Any] | None = None,
+    db_path: str | Path | None = None,
+) -> int:
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO job_batches
+                (search_run_id, agent_cycle_id, status, created_at, metadata_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                search_run_id,
+                agent_cycle_id,
+                "open",
+                _utc_now_iso(),
+                json.dumps(metadata) if metadata else None,
+            ),
+        )
+        batch_id = cur.lastrowid
+        assert batch_id is not None
+        return int(batch_id)
+
+
+def finish_job_batch(
+    batch_id: int,
+    *,
+    status: str = "flushed",
+    job_count: int,
+    metadata: dict[str, Any] | None = None,
+    db_path: str | Path | None = None,
+) -> None:
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE job_batches
+               SET status = ?, flushed_at = ?, job_count = ?,
+                   metadata_json = COALESCE(?, metadata_json)
+             WHERE id = ?
+            """,
+            (
+                status,
+                _utc_now_iso(),
+                job_count,
+                json.dumps(metadata) if metadata else None,
+                batch_id,
+            ),
+        )
+
+
 def finish_search_run(
     run_id: int,
     *,
@@ -108,6 +214,172 @@ def log_agent_event(
                 _utc_now_iso(),
             ),
         )
+
+
+def record_agent_tool_call(
+    *,
+    tool_name: str,
+    status: str,
+    agent_cycle_id: int | None = None,
+    search_run_id: int | None = None,
+    source_name: str | None = None,
+    input: dict[str, Any] | None = None,
+    output: dict[str, Any] | None = None,
+    error_message: str | None = None,
+    latency_ms: int | None = None,
+    db_path: str | Path | None = None,
+) -> int:
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO agent_tool_calls
+                (agent_cycle_id, search_run_id, tool_name, source_name, status,
+                 input_json, output_json, error_message, latency_ms, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                agent_cycle_id,
+                search_run_id,
+                tool_name,
+                source_name,
+                status,
+                json.dumps(input) if input is not None else None,
+                json.dumps(output) if output is not None else None,
+                error_message,
+                latency_ms,
+                _utc_now_iso(),
+            ),
+        )
+        tool_call_id = cur.lastrowid
+        assert tool_call_id is not None
+        return int(tool_call_id)
+
+
+def update_source_stats(
+    *,
+    source_name: str,
+    status: str,
+    candidates: int = 0,
+    jobs_saved: int = 0,
+    backoff_until: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    db_path: str | Path | None = None,
+) -> None:
+    with connect(db_path) as conn:
+        now = _utc_now_iso()
+        existing = conn.execute(
+            "SELECT id, runs_total, successes_total, failures_total, "
+            "candidates_total, jobs_saved_total FROM agent_source_stats "
+            "WHERE source_name = ? LIMIT 1",
+            (source_name,),
+        ).fetchone()
+        success_inc = 1 if status == "succeeded" else 0
+        failure_inc = 1 if status not in {"succeeded", "skipped"} else 0
+        metadata_json = json.dumps(metadata) if metadata is not None else None
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO agent_source_stats
+                    (source_name, last_started_at, last_finished_at, last_status,
+                     backoff_until, runs_total, successes_total, failures_total,
+                     candidates_total, jobs_saved_total, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    source_name,
+                    now,
+                    now,
+                    status,
+                    backoff_until,
+                    1,
+                    success_inc,
+                    failure_inc,
+                    candidates,
+                    jobs_saved,
+                    metadata_json,
+                ),
+            )
+            return
+        conn.execute(
+            """
+            UPDATE agent_source_stats
+               SET last_started_at = ?,
+                   last_finished_at = ?,
+                   last_status = ?,
+                   backoff_until = COALESCE(?, backoff_until),
+                   runs_total = runs_total + 1,
+                   successes_total = successes_total + ?,
+                   failures_total = failures_total + ?,
+                   candidates_total = candidates_total + ?,
+                   jobs_saved_total = jobs_saved_total + ?,
+                   metadata_json = COALESCE(?, metadata_json)
+             WHERE id = ?
+            """,
+            (
+                now,
+                now,
+                status,
+                backoff_until,
+                success_inc,
+                failure_inc,
+                candidates,
+                jobs_saved,
+                metadata_json,
+                existing["id"],
+            ),
+        )
+
+
+def list_source_stats(db_path: str | Path | None = None) -> list[dict[str, Any]]:
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT source_name, last_started_at, last_finished_at, last_status,
+                   backoff_until, runs_total, successes_total, failures_total,
+                   candidates_total, jobs_saved_total, metadata_json
+            FROM agent_source_stats
+            ORDER BY source_name
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_agent_memory(
+    *,
+    memory_key: str,
+    memory_scope: str,
+    value: dict[str, Any],
+    confidence: float | None = None,
+    db_path: str | Path | None = None,
+) -> int:
+    with connect(db_path) as conn:
+        now = _utc_now_iso()
+        existing = conn.execute(
+            "SELECT id FROM agent_memory WHERE memory_key = ? AND memory_scope = ? LIMIT 1",
+            (memory_key, memory_scope),
+        ).fetchone()
+        value_json = json.dumps(value)
+        if existing is not None:
+            conn.execute(
+                """
+                UPDATE agent_memory
+                   SET value_json = ?, confidence = ?, updated_at = ?
+                 WHERE id = ?
+                """,
+                (value_json, confidence, now, existing["id"]),
+            )
+            return int(existing["id"])
+        cur = conn.execute(
+            """
+            INSERT INTO agent_memory
+                (memory_key, memory_scope, value_json, confidence, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (memory_key, memory_scope, value_json, confidence, now, now),
+        )
+        memory_id = cur.lastrowid
+        assert memory_id is not None
+        return int(memory_id)
 
 
 def _normalize(text: str) -> str:
@@ -169,6 +441,12 @@ def upsert_job(
     duplicate_status: str = "new",
     duplicate_of_job_id: int | None = None,
     duplicate_score: float | None = None,
+    batch_id: int | None = None,
+    location_normalized_json: str | None = None,
+    role_family: str | None = None,
+    role_match_status: str | None = None,
+    level: str | None = None,
+    level_confidence: float | None = None,
     db_path: str | Path | None = None,
 ) -> UpsertResult:
     """Insert or update a jobs row.
@@ -215,13 +493,18 @@ def upsert_job(
                        title = ?,
                        normalized_title = ?,
                        location = COALESCE(?, location),
+                       location_normalized_json = COALESCE(?, location_normalized_json),
                        remote_type = COALESCE(?, remote_type),
                        apply_url = COALESCE(?, apply_url),
                        posted_date = COALESCE(?, posted_date),
                        posted_date_confidence = COALESCE(?, posted_date_confidence),
                        description = COALESCE(?, description),
                        skills_json = COALESCE(?, skills_json),
+                       role_family = COALESCE(?, role_family),
+                       role_match_status = COALESCE(?, role_match_status),
                        seniority = COALESCE(?, seniority),
+                       level = COALESCE(?, level),
+                       level_confidence = COALESCE(?, level_confidence),
                        employment_type = COALESCE(?, employment_type),
                        salary_text = COALESCE(?, salary_text),
                        -- ATS fingerprints are immutable: once set, never overwrite.
@@ -246,13 +529,18 @@ def upsert_job(
                     extracted.title,
                     normalized_title,
                     extracted.location,
+                    location_normalized_json,
                     extracted.remote_type,
                     extracted.apply_url,
                     extracted.posted_date,
                     extracted.posted_date_confidence,
                     description,
                     skills_json,
+                    role_family,
+                    role_match_status,
                     extracted.seniority,
+                    level,
+                    level_confidence,
                     extracted.employment_type,
                     extracted.salary_text,
                     extracted.ats_type,
@@ -274,20 +562,21 @@ def upsert_job(
                 INSERT INTO jobs (
                     company_id, company_name, normalized_company_name,
                     title, normalized_title,
-                    location, remote_type,
+                    location, location_normalized_json, remote_type,
                     canonical_url, apply_url,
                     ats_type, ats_job_id,
                     posted_date, posted_date_confidence,
                     first_seen_at, last_seen_at,
                     description, description_hash, description_embedding_json,
                     skills_json,
-                    seniority, employment_type, salary_text,
+                    role_family, role_match_status,
+                    seniority, level, level_confidence, employment_type, salary_text,
                     source_type, source_query,
                     duplicate_status, duplicate_of_job_id, duplicate_score,
                     extraction_confidence, needs_review,
                     created_at, updated_at
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -297,6 +586,7 @@ def upsert_job(
                     extracted.title,
                     normalized_title,
                     extracted.location,
+                    location_normalized_json,
                     extracted.remote_type,
                     canonical_url,
                     extracted.apply_url,
@@ -310,7 +600,11 @@ def upsert_job(
                     description_hash,
                     embedding_json,
                     skills_json,
+                    role_family,
+                    role_match_status,
                     extracted.seniority,
+                    level,
+                    level_confidence,
                     extracted.employment_type,
                     extracted.salary_text,
                     source_type,
@@ -332,12 +626,13 @@ def upsert_job(
         conn.execute(
             """
             INSERT INTO job_sources
-                (job_id, source_type, source_url, canonical_source_url, source_query,
+                (job_id, batch_id, source_type, source_url, canonical_source_url, source_query,
                  search_run_id, found_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id,
+                batch_id,
                 source_type,
                 raw_url,
                 canonical_url,
@@ -480,6 +775,7 @@ def touch_existing_job(
     source_type: str,
     source_query: str | None,
     search_run_id: int | None,
+    batch_id: int | None = None,
     db_path: str | Path | None = None,
 ) -> None:
     """Mark an existing job as re-discovered (design §18.1 exact_duplicate).
@@ -498,11 +794,20 @@ def touch_existing_job(
         conn.execute(
             """
             INSERT INTO job_sources
-                (job_id, source_type, source_url, canonical_source_url, source_query,
+                (job_id, batch_id, source_type, source_url, canonical_source_url, source_query,
                  search_run_id, found_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (job_id, source_type, raw_url, canonical_url, source_query, search_run_id, now),
+            (
+                job_id,
+                batch_id,
+                source_type,
+                raw_url,
+                canonical_url,
+                source_query,
+                search_run_id,
+                now,
+            ),
         )
 
 
@@ -634,6 +939,7 @@ def upsert_linkedin_post(
     detected_role: str | None = None,
     confidence: float | None = None,
     source_query: str | None = None,
+    company_id: int | None = None,
     db_path: str | Path | None = None,
 ) -> LinkedInPostUpsertResult:
     """Insert or refresh a linkedin_posts row.
@@ -659,12 +965,13 @@ def upsert_linkedin_post(
         cur = conn.execute(
             """
             INSERT INTO linkedin_posts
-                (post_url, canonical_url, author_name, author_url, company_name,
+                (company_id, post_url, canonical_url, author_name, author_url, company_name,
                  normalized_company_name, detected_role, post_text, source_query,
                  confidence, found_at, processed_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new')
             """,
             (
+                company_id,
                 post_url,
                 post_url,
                 author_name,
