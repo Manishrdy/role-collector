@@ -124,10 +124,12 @@ limits:
   max_total_pages_per_run: 100
   stop_on_captcha: true
   stop_on_login_page: true
-  # Tuned 2026-05-12 after Google blocked us at query #12 with 20-60s delays.
-  # Longer jitter looks less like rapid-fire automation.
-  min_delay_between_searches_seconds: 90
-  max_delay_between_searches_seconds: 240
+  # Tuned 2026-05-12: ATS API discovery now produces ~300 jobs without
+  # Google, so Google search is just the long-tail fallback. 30-90s jitter
+  # is "polite scraper" — Google will let 6-10 queries through before
+  # blocking, which is plenty when combined with the API discovery layer.
+  min_delay_between_searches_seconds: 30
+  max_delay_between_searches_seconds: 90
 
 dedupe:
   duplicate_threshold: 0.92
