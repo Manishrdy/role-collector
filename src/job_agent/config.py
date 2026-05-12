@@ -62,6 +62,12 @@ class FundingDiscoverySection(BaseModel):
 class LinkedInPublicSearchSection(BaseModel):
     enabled: bool = False
     login_allowed: bool = False
+    # Rate-limit knobs for fetching individual LinkedIn post pages.
+    # Defaults are conservative; tune downward at your own risk.
+    min_delay_per_post_seconds: float = 30.0
+    max_delay_per_post_seconds: float = 60.0
+    max_results_per_query: int = 5
+    stop_on_captcha: bool = True
 
 
 class SourcesSection(BaseModel):

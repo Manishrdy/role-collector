@@ -619,6 +619,71 @@ def upsert_funding_event(
 
 
 @dataclass(frozen=True)
+class LinkedInPostUpsertResult:
+    post_id: int
+    inserted: bool
+
+
+def upsert_linkedin_post(
+    *,
+    post_url: str,
+    post_text: str,
+    author_name: str | None = None,
+    author_url: str | None = None,
+    company_name: str | None = None,
+    detected_role: str | None = None,
+    confidence: float | None = None,
+    source_query: str | None = None,
+    db_path: str | Path | None = None,
+) -> LinkedInPostUpsertResult:
+    """Insert or refresh a linkedin_posts row.
+
+    Idempotency on ``post_url`` (the table has a UNIQUE constraint there).
+    Re-discovery of the same post no-ops and returns ``inserted=False``.
+    """
+    if not post_url.strip():
+        raise ValueError("post_url is required")
+    if not post_text.strip():
+        raise ValueError("post_text is required")
+    normalized_company = _normalize(company_name) if company_name else None
+    with connect(db_path) as conn:
+        now = _utc_now_iso()
+        existing = conn.execute(
+            "SELECT id FROM linkedin_posts WHERE post_url = ? LIMIT 1",
+            (post_url,),
+        ).fetchone()
+        if existing is not None:
+            return LinkedInPostUpsertResult(
+                post_id=int(existing["id"]), inserted=False
+            )
+        cur = conn.execute(
+            """
+            INSERT INTO linkedin_posts
+                (post_url, canonical_url, author_name, author_url, company_name,
+                 normalized_company_name, detected_role, post_text, source_query,
+                 confidence, found_at, processed_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new')
+            """,
+            (
+                post_url,
+                post_url,
+                author_name,
+                author_url,
+                company_name,
+                normalized_company,
+                detected_role,
+                post_text,
+                source_query,
+                confidence,
+                now,
+            ),
+        )
+        new_id = cur.lastrowid
+        assert new_id is not None
+        return LinkedInPostUpsertResult(post_id=int(new_id), inserted=True)
+
+
+@dataclass(frozen=True)
 class CompanyResolutionRow:
     company_id: int
     name: str

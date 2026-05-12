@@ -281,7 +281,21 @@ def run_linkedin_public_search_node(state: AgentState) -> AgentState:
     if not cfg.sources.linkedin_public_search.enabled:
         _event(state, "linkedin_public_search", "disabled in config")
         return state
-    _event(state, "linkedin_public_search", "[stub] enabled but not yet implemented")
+    from job_agent.sources.linkedin.orchestrator import discover_linkedin_posts
+
+    run_id = state.get("run_id")
+    stats = discover_linkedin_posts(cfg, search_run_id=run_id)
+    _event(
+        state,
+        "linkedin_public_search",
+        (
+            f"urls={stats.candidate_urls} ok={stats.posts_fetched} "
+            f"blocked={stats.posts_blocked} errored={stats.posts_errored} "
+            f"hiring={stats.posts_classified_hiring} inserted={stats.posts_inserted} "
+            f"existing={stats.posts_existing} seeded={stats.companies_seeded} "
+            f"stopped_early={stats.stopped_early} stop_reason={stats.stop_reason}"
+        ),
+    )
     return state
 
 
