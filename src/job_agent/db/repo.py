@@ -546,6 +546,78 @@ def record_page_fetch(
         return new_id
 
 
+@dataclass(frozen=True)
+class FundingUpsertResult:
+    funding_event_id: int
+    company_id: int | None
+    inserted: bool
+
+
+def upsert_funding_event(
+    *,
+    company_name: str,
+    source_url: str,
+    round: str | None = None,
+    amount: str | None = None,
+    announced_date: str | None = None,
+    investors: str | None = None,
+    raw_snippet: str | None = None,
+    db_path: str | Path | None = None,
+) -> FundingUpsertResult:
+    """Insert or refresh a funding_events row.
+
+    Idempotency key is ``(normalized_company_name, source_url)``: a re-discovery
+    by the same aggregator does not insert a new row. The companies row is
+    upserted in the same transaction so a `company_id` is always set.
+    """
+    if not company_name.strip():
+        raise ValueError("company_name is required")
+    if not source_url.strip():
+        raise ValueError("source_url is required")
+    normalized = _normalize(company_name)
+    company_id = upsert_company(name=company_name, db_path=db_path)
+    with connect(db_path) as conn:
+        now = _utc_now_iso()
+        existing = conn.execute(
+            "SELECT id FROM funding_events "
+            "WHERE normalized_company_name = ? AND source_url = ? LIMIT 1",
+            (normalized, source_url),
+        ).fetchone()
+        if existing is not None:
+            return FundingUpsertResult(
+                funding_event_id=int(existing["id"]),
+                company_id=company_id,
+                inserted=False,
+            )
+        cur = conn.execute(
+            """
+            INSERT INTO funding_events
+                (company_id, company_name, normalized_company_name, round, amount,
+                 announced_date, investors, source_url, found_at, raw_snippet)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                company_id,
+                company_name,
+                normalized,
+                round,
+                amount,
+                announced_date,
+                investors,
+                source_url,
+                now,
+                raw_snippet,
+            ),
+        )
+        new_id = cur.lastrowid
+        assert new_id is not None
+        return FundingUpsertResult(
+            funding_event_id=int(new_id),
+            company_id=company_id,
+            inserted=True,
+        )
+
+
 def set_duplicate_decision(
     *,
     job_id: int,

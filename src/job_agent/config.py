@@ -41,8 +41,15 @@ class ATSGoogleSearchSection(BaseModel):
     domains: list[str] = Field(default_factory=list)
 
 
+class FundingAggregatorToggles(BaseModel):
+    hackernews: bool = True
+    techcrunch: bool = True
+    google: bool = False  # off by default — costs a nodriver session
+
+
 class FundingDiscoverySection(BaseModel):
     enabled: bool = False
+    aggregators: FundingAggregatorToggles = Field(default_factory=FundingAggregatorToggles)
 
 
 class LinkedInPublicSearchSection(BaseModel):

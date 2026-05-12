@@ -178,7 +178,19 @@ def run_funding_discovery_node(state: AgentState) -> AgentState:
     if not cfg.sources.funding_discovery.enabled:
         _event(state, "funding_discovery", "disabled in config")
         return state
-    _event(state, "funding_discovery", "[stub] enabled but not yet implemented")
+    from job_agent.sources.funding.orchestrator import discover_funding_events
+
+    run_id = state.get("run_id")
+    stats = discover_funding_events(cfg, search_run_id=run_id)
+    _event(
+        state,
+        "funding_discovery",
+        (
+            f"total={stats.candidates_total} unique={stats.candidates_unique} "
+            f"inserted={stats.candidates_inserted} existing={stats.candidates_existing} "
+            f"errors={len(stats.errors)} by_aggregator={stats.by_aggregator}"
+        ),
+    )
     return state
 
 
