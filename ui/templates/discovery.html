@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Discovery · Role Collector{% endblock %}
+{% block content %}
+<h1 class="page-title">Discovery</h1>
+<p class="page-sub">Raw signals from each channel — what fed into the jobs list.</p>
+
+<div class="tabs">
+  <div class="tab active" data-tab="funding">Funding events <span class="badge" id="funding-count">…</span></div>
+  <div class="tab" data-tab="linkedin">LinkedIn posts <span class="badge" id="linkedin-count">…</span></div>
+  <div class="tab" data-tab="watchlist">Watchlist <span class="badge" id="watchlist-count">…</span></div>
+</div>
+
+<div id="pane-funding" class="tab-pane active">
+  <div class="card">
+    <div class="table-wrap">
+      <table class="data">
+        <thead>
+          <tr><th>ID</th><th>Company</th><th>Round</th><th>Amount</th><th>Announced</th><th>Source</th><th>Found</th></tr>
+        </thead>
+        <tbody id="funding-body">
+          <tr><td colspan="7" class="loading">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div id="pane-linkedin" class="tab-pane">
+  <div class="card">
+    <div class="table-wrap">
+      <table class="data">
+        <thead>
+          <tr><th>ID</th><th>Author</th><th>Company</th><th>Role</th><th>Confidence</th><th>Status</th><th>Post</th><th>Found</th></tr>
+        </thead>
+        <tbody id="linkedin-body">
+          <tr><td colspan="8" class="loading">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div id="pane-watchlist" class="tab-pane">
+  <div class="card">
+    <div class="table-wrap">
+      <table class="data">
+        <thead>
+          <tr><th>ID</th><th>Name</th><th>ATS</th><th>ATS URL</th><th>Last polled</th><th>Last checked</th></tr>
+        </thead>
+        <tbody id="watchlist-body">
+          <tr><td colspan="6" class="loading">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

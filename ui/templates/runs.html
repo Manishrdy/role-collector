@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Runs · Role Collector{% endblock %}
+{% block content %}
+<h1 class="page-title">Runs & Events</h1>
+<p class="page-sub">Search-run lifecycle, agent event log, and per-page fetch audit.</p>
+
+<div class="card">
+  <div class="card-title">Search runs (last 100)</div>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr><th>ID</th><th>Source</th><th>Status</th><th>Started</th><th>Finished</th><th>Query</th><th>Error</th></tr>
+      </thead>
+      <tbody id="runs-body">
+        <tr><td colspan="7" class="loading">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">Agent events (last 300)</div>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr><th>ID</th><th>Run</th><th>Type</th><th>Message</th><th>Created</th></tr>
+      </thead>
+      <tbody id="events-body">
+        <tr><td colspan="5" class="loading">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">Page fetches (last 200)</div>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr><th>ID</th><th>Run</th><th>Status</th><th>HTTP</th><th>Domain</th><th>Page type</th><th>Blocked</th><th>URL</th><th>Fetched</th></tr>
+      </thead>
+      <tbody id="fetches-body">
+        <tr><td colspan="9" class="loading">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Jobs · Role Collector{% endblock %}
+{% block content %}
+<h1 class="page-title">Jobs</h1>
+<p class="page-sub" id="jobs-count">Loading…</p>
+
+<div class="filters">
+  <input type="search" id="search" placeholder="Search company or title…">
+  <select id="filter-dup"><option value="">Dedup: any</option></select>
+  <select id="filter-ats"><option value="">ATS: any</option></select>
+  <select id="filter-remote"><option value="">Remote: any</option></select>
+  <label class="toggle">
+    <input type="checkbox" id="needs-review">
+    Needs review only
+  </label>
+</div>
+
+<div class="card">
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Company</th>
+          <th>Title</th>
+          <th>Location</th>
+          <th>Remote</th>
+          <th>ATS</th>
+          <th>Dedup</th>
+          <th>First seen</th>
+        </tr>
+      </thead>
+      <tbody id="jobs-body">
+        <tr><td colspan="8" class="loading">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="pagination">
+    <button id="prev-page">‹ Previous</button>
+    <span id="pagination-info"></span>
+    <button id="next-page">Next ›</button>
+  </div>
+</div>
+{% endblock %}

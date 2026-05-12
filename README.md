@@ -21,7 +21,7 @@ What works now:
 - Single-session orchestrator: one Chrome instance for the whole run, per-query rate limiting, cross-query dedup, /sorry/index detection that stops the run early
 - LangGraph workflow with 13 nodes (ats_google_search now real, others still stubs)
 - CLI flags: `--dry-run`, `--max-queries`, `--max-results`, `--debug-dump`
-- Streamlit review dashboard (placeholder)
+- FastAPI review dashboard (vanilla HTML/CSS/JS, no framework)
 - `make` targets for setup/run/test/lint
 - 55 passing tests
 
@@ -43,7 +43,7 @@ Other commands:
 make test          # pytest
 make lint          # ruff + mypy
 make format        # ruff format + autofix
-make review        # streamlit ui
+make review        # FastAPI dashboard on http://127.0.0.1:8501
 .venv/bin/python -m job_agent.cli doctor   # readiness check
 ```
 
@@ -74,7 +74,10 @@ src/job_agent/
     queries.py               # PlannedQuery generator
     ats_search.py            # nodriver orchestrator (sync wrapper, async core)
   cli.py                     # python -m job_agent.cli
-ui/streamlit_app.py          # review dashboard
+ui/
+  server.py                  # FastAPI app + REST endpoints
+  templates/*.html           # Jinja2 server-rendered pages
+  static/{style.css,app.js}  # vanilla CSS + JS, no framework
 scripts/
   smoke_ashby.py             # PoC: opens an Ashby company page directly
   smoke_google_nodriver.py   # PoC: confirms nodriver bypasses Google's block

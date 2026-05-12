@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Role Collector{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-page="{{ page }}"{% block body_data %}{% endblock %}>
+  <header class="topbar">
+    <div class="brand">
+      <a href="/" class="brand-link">Role Collector</a>
+      <span class="subtitle">job-sourcing pipeline</span>
+    </div>
+    <nav class="topnav">
+      <a href="/" class="{% if page == 'overview' %}active{% endif %}">Overview</a>
+      <a href="/jobs" class="{% if page == 'jobs' %}active{% endif %}">Jobs</a>
+      <a href="/dedup" class="{% if page == 'dedup' %}active{% endif %}">Dedup Review</a>
+      <a href="/discovery" class="{% if page == 'discovery' %}active{% endif %}">Discovery</a>
+      <a href="/runs" class="{% if page == 'runs' %}active{% endif %}">Runs</a>
+    </nav>
+  </header>
+  <main class="content">
+    {% block content %}{% endblock %}
+  </main>
+  <script src="/static/app.js" defer></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

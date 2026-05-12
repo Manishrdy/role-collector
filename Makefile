@@ -12,7 +12,7 @@ help:
 	@echo "  ollama      - pull qwen3:8b via ollama"
 	@echo "  migrate     - create SQLite schema if not exists"
 	@echo "  run         - run the agent end-to-end (LangGraph workflow)"
-	@echo "  review      - launch the Streamlit review dashboard"
+	@echo "  review      - launch the FastAPI review dashboard on http://127.0.0.1:8501"
 	@echo "  test        - run pytest"
 	@echo "  lint        - ruff + mypy"
 	@echo "  format      - ruff format"
@@ -47,7 +47,7 @@ run:
 	$(PY) -m job_agent.cli run
 
 review:
-	$(VENV)/bin/streamlit run ui/streamlit_app.py
+	$(VENV)/bin/uvicorn ui.server:app --host 127.0.0.1 --port 8501 --reload
 
 test:
 	$(VENV)/bin/pytest
