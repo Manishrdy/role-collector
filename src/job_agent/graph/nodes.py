@@ -220,6 +220,62 @@ def run_funding_resolvers_node(state: AgentState) -> AgentState:
     return state
 
 
+def run_watchlist_node(state: AgentState) -> AgentState:
+    """Enumerate ATS boards for watchlist companies; prepend to candidate_urls.
+
+    Each resolved company (ats_url IS NOT NULL) has its board page fetched
+    and individual job posting URLs prepended to ``state["candidate_urls"]``
+    so the existing Phase-3 fetch / extract / save pipeline picks them up.
+    """
+    cfg = load_config()
+    if not cfg.sources.funding_discovery.enabled:
+        return state
+    from job_agent.sources.funding.watchlist import fetch_and_enumerate
+
+    watchlist = repo.list_watchlist_companies()
+    if not watchlist:
+        _event(state, "watchlist", "no resolved companies to poll")
+        return state
+
+    new_candidates: list[dict[str, Any]] = []
+    by_ats: dict[str, int] = {}
+    for company in watchlist:
+        if not company.ats_url:
+            continue
+        urls = fetch_and_enumerate(company.ats_url)
+        for url in urls:
+            new_candidates.append(
+                {
+                    "url": url,
+                    "canonical_url": url,
+                    "title": f"Careers @ {company.name}",
+                    "snippet": "",
+                    "rank": 0,
+                    "engine": "watchlist",
+                    "source_type": "watchlist",
+                    "source_query": company.ats_url,
+                    "target_domain": "",
+                    "ats_type": company.ats_type or "unknown",
+                    "time_window": "any",
+                    "role": "",
+                    "location": None,
+                }
+            )
+        by_ats[company.ats_type or "unknown"] = by_ats.get(company.ats_type or "unknown", 0) + len(
+            urls
+        )
+
+    existing = state.get("candidate_urls", []) or []
+    # Prepend so watchlist URLs are processed before raw ATS-search results.
+    state["candidate_urls"] = new_candidates + existing
+    _event(
+        state,
+        "watchlist",
+        f"companies={len(watchlist)} jobs={len(new_candidates)} by_ats={by_ats}",
+    )
+    return state
+
+
 def run_linkedin_public_search_node(state: AgentState) -> AgentState:
     cfg = load_config()
     if not cfg.sources.linkedin_public_search.enabled:

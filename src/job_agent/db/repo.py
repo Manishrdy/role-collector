@@ -694,6 +694,7 @@ def list_unresolved_funding_companies(
                     ORDER BY id DESC LIMIT 1) AS latest_funding_source_url
             FROM companies c
             WHERE c.website_url IS NULL
+              AND c.notes IS NULL
               AND c.id IN (SELECT DISTINCT company_id FROM funding_events
                            WHERE company_id IS NOT NULL)
             ORDER BY (

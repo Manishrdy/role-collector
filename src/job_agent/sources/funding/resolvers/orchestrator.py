@@ -89,6 +89,22 @@ def resolve_unresolved_companies(
             needs_google.append(row)
             stats.per_company.append(per)
             continue
+        if website is None and (is_vc or is_personal):
+            # Persist a sentinel so re-runs don't re-check the same
+            # known-unresolvable rows. Plain repo update — the resolver
+            # chain has nothing to write here.
+            reason = per.get("skip_reason") or "skipped"
+            try:
+                repo.update_company_resolution(
+                    company_id=row.company_id,
+                    notes=f"skipped: {reason}",
+                    db_path=db_path,
+                )
+            except Exception as e:
+                log.exception("[resolvers] sentinel persist failed for %s", row.name)
+                stats.errors.append(f"{row.name}: sentinel: {e}")
+            stats.per_company.append(per)
+            continue
         per["website"] = website
         _persist_chain(row, website=website, stats=stats, per=per, session=session)
         stats.per_company.append(per)
