@@ -1,7 +1,8 @@
-"""Streamlit review dashboard — Phase-7 placeholder.
+"""Streamlit review dashboard — Phase-7 overview / home page.
 
-Lists rows from the SQLite db. Filtering, dedupe review, and labeling land
-in Phase 7 once jobs actually start landing in the database.
+Multi-page app. See `ui/pages/` for the Jobs browser, Dedup Review, and
+Runs & Events pages. This file is the landing tab: counts, dedup mix,
+and a strip of the latest discoveries.
 """
 
 from __future__ import annotations
@@ -25,27 +26,47 @@ if not db_path.exists():
     st.stop()
 
 with sqlite3.connect(db_path) as conn:
-    runs_df = pd.read_sql(
-        "SELECT id, source_type, status, started_at, finished_at, query, time_window "
-        "FROM search_runs ORDER BY id DESC LIMIT 50",
+    totals = pd.read_sql(
+        """
+        SELECT
+          COUNT(*) AS jobs,
+          SUM(CASE WHEN duplicate_status='new' THEN 1 ELSE 0 END) AS new,
+          SUM(CASE WHEN duplicate_status='possible_duplicate' THEN 1 ELSE 0 END) AS possible,
+          SUM(CASE WHEN duplicate_status='duplicate' THEN 1 ELSE 0 END) AS dup,
+          SUM(needs_review) AS needs_review
+        FROM jobs
+        """,
+        conn,
+    ).iloc[0]
+    runs_n = pd.read_sql("SELECT COUNT(*) AS n FROM search_runs", conn).iloc[0]["n"]
+    latest = pd.read_sql(
+        """
+        SELECT id, company_name, title, location, ats_type, duplicate_status,
+               first_seen_at
+        FROM jobs
+        ORDER BY id DESC
+        LIMIT 10
+        """,
         conn,
     )
-    jobs_count = pd.read_sql("SELECT COUNT(*) AS n FROM jobs", conn).iloc[0]["n"]
-    events_df = pd.read_sql(
-        "SELECT id, search_run_id, event_type, event_message, created_at "
-        "FROM agent_events ORDER BY id DESC LIMIT 100",
-        conn,
-    )
 
-col1, col2, col3 = st.columns(3)
-col1.metric("Total jobs", int(jobs_count))
-col2.metric("Recent runs", len(runs_df))
-col3.metric("Recent events", len(events_df))
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Total jobs", int(totals["jobs"] or 0))
+c2.metric("New", int(totals["new"] or 0))
+c3.metric("Possible duplicates", int(totals["possible"] or 0))
+c4.metric("Confirmed duplicates", int(totals["dup"] or 0))
+c5.metric("Needs review", int(totals["needs_review"] or 0))
 
-st.subheader("Recent runs")
-st.dataframe(runs_df, use_container_width=True)
+st.caption(f"Across {int(runs_n)} search runs · DB: `{db_path}`")
 
-st.subheader("Recent agent events")
-st.dataframe(events_df, use_container_width=True)
+st.subheader("Latest discoveries")
+if latest.empty:
+    st.info("No jobs yet — run `make discover` to populate.")
+else:
+    st.dataframe(latest, use_container_width=True, hide_index=True)
 
-st.caption("Phase-7 dashboard placeholder. Real job listing, filtering, and dedupe review land later.")
+st.markdown(
+    "Use the sidebar to open **Jobs** (browse + filter), "
+    "**Dedup Review** (confirm/reject possible duplicates), "
+    "or **Runs & Events** (agent activity log)."
+)

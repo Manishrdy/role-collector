@@ -546,6 +546,35 @@ def record_page_fetch(
         return new_id
 
 
+def set_duplicate_decision(
+    *,
+    job_id: int,
+    decision: str,
+    db_path: str | Path | None = None,
+) -> None:
+    """Record a human review decision for a `possible_duplicate` job.
+
+    `decision='duplicate'` confirms the auto-detected match. `decision='new'`
+    rejects it and clears `duplicate_of_job_id` / `duplicate_score` so the job
+    is no longer paired in the dashboard.
+    """
+    if decision not in ("new", "duplicate"):
+        raise ValueError(f"invalid decision: {decision!r}")
+    with connect(db_path) as conn:
+        now = _utc_now_iso()
+        if decision == "duplicate":
+            conn.execute(
+                "UPDATE jobs SET duplicate_status = ?, updated_at = ? WHERE id = ?",
+                (decision, now, job_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE jobs SET duplicate_status = ?, duplicate_of_job_id = NULL, "
+                "duplicate_score = NULL, updated_at = ? WHERE id = ?",
+                (decision, now, job_id),
+            )
+
+
 def list_table_names(db_path: str | Path | None = None) -> list[str]:
     with connect(db_path) as conn:
         rows = conn.execute(
