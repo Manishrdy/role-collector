@@ -169,6 +169,54 @@ def test_dedup_across_queries(
     assert stats.total_results == 1
 
 
+def test_self_stop_cap_halts_after_n_successful_queries(
+    cfg: AppConfig, monkeypatch: pytest.MonkeyPatch, isolated_db: Path
+) -> None:
+    """When max_queries_before_self_stop is set, we stop voluntarily after
+    N successes and skip the rest (with status 'self-stop cap reached')."""
+    # Build a cfg with cap=2 so we should fire queries 1+2, then voluntarily skip 3+4+5.
+    cfg.sources.ats_google_search.max_queries_before_self_stop = 2
+
+    async def fake_run_query(
+        browser, *, query, time_window, target_domain, max_results, debug_dump_dir
+    ):
+        return SearchOutcome(
+            engine="google",
+            query=query,
+            time_window=time_window,
+            results=[_mk_result("https://x/" + query, 1)],
+        )
+
+    monkeypatch.setattr(ats_search, "_run_query", fake_run_query)
+    candidates, stats = _drive_with_fake(cfg=cfg, plans=_plans(5), fake_run_query=fake_run_query)
+
+    assert stats.queries_attempted == 5
+    assert stats.queries_succeeded == 2  # capped
+    assert stats.queries_blocked == 3  # 3 skipped after cap
+    assert stats.self_stopped_at == 2  # hit cap at query 2
+    assert stats.google_blocked_at is None  # not blocked by Google
+    assert len(candidates) == 2
+
+
+def test_self_stop_cap_zero_disables_the_cap(
+    cfg: AppConfig, monkeypatch: pytest.MonkeyPatch, isolated_db: Path
+) -> None:
+    """max_queries_before_self_stop = 0 means no cap (run all queries)."""
+    cfg.sources.ats_google_search.max_queries_before_self_stop = 0
+
+    async def fake_run_query(
+        browser, *, query, time_window, target_domain, max_results, debug_dump_dir
+    ):
+        return SearchOutcome(
+            engine="google", query=query, time_window=time_window, results=[]
+        )
+
+    monkeypatch.setattr(ats_search, "_run_query", fake_run_query)
+    _, stats = _drive_with_fake(cfg=cfg, plans=_plans(5), fake_run_query=fake_run_query)
+    assert stats.queries_succeeded == 5
+    assert stats.self_stopped_at is None
+
+
 def test_sleep_is_invoked_between_queries(
     cfg: AppConfig, monkeypatch: pytest.MonkeyPatch, isolated_db: Path
 ) -> None:

@@ -67,6 +67,7 @@ class OrchestrationStats:
     queries_succeeded: int = 0
     queries_blocked: int = 0
     google_blocked_at: int | None = None  # 1-based query index when google first blocked
+    self_stopped_at: int | None = None  # 1-based query index when self-stop cap was hit
     total_results: int = 0
     duplicate_results: int = 0
 
@@ -147,17 +148,20 @@ async def _drive(
     seen: dict[str, CandidateURL] = {}
     stats = OrchestrationStats()
     google_blocked = False
+    self_stop_cap = cfg.sources.ats_google_search.max_queries_before_self_stop
+    self_stopped = False
 
     for idx, plan in enumerate(plans, start=1):
         stats.queries_attempted += 1
-        if google_blocked:
-            # Once Google has blocked us, further queries will redirect to
-            # /sorry/index too. Stop early instead of burning time.
+        if google_blocked or self_stopped:
+            # Skip remaining queries — either Google blocked us, or we
+            # hit the self-imposed cap to stay under the threshold.
             stats.queries_blocked += 1
+            reason = "google blocked earlier" if google_blocked else "self-stop cap reached"
             _log_event(
                 search_run_id,
                 "search_skipped",
-                f"google blocked earlier; skipping query {idx}",
+                f"{reason}; skipping query {idx}",
                 {"query": plan.query, "time_window": plan.time_window},
             )
             continue
@@ -212,7 +216,23 @@ async def _drive(
                 },
             )
 
-        if idx < len(plans) and not google_blocked:
+        # Self-stop check: if we've succeeded N times, voluntarily stop
+        # before Google rate-limits us.
+        if (
+            self_stop_cap > 0
+            and stats.queries_succeeded >= self_stop_cap
+            and not google_blocked
+        ):
+            self_stopped = True
+            stats.self_stopped_at = idx
+            _log_event(
+                search_run_id,
+                "search_self_stopped",
+                f"self-stop cap of {self_stop_cap} hit after query {idx}",
+                {"queries_succeeded": stats.queries_succeeded},
+            )
+
+        if idx < len(plans) and not google_blocked and not self_stopped:
             delay = _delay_seconds(cfg)
             log.info("sleeping %.1fs between queries", delay)
             await sleep_async(delay)

@@ -39,6 +39,10 @@ class SearchSection(BaseModel):
 class ATSGoogleSearchSection(BaseModel):
     enabled: bool = True
     domains: list[str] = Field(default_factory=list)
+    # Self-impose a cap so we voluntarily stop before Google rate-limits us.
+    # 0 disables the cap. Google's threshold for `site:` queries is roughly
+    # ~10-15 per session; 10 stays well under it.
+    max_queries_before_self_stop: int = 10
 
 
 class FundingAggregatorToggles(BaseModel):

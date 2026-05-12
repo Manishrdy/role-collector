@@ -167,7 +167,8 @@ def run_ats_google_search_node(state: AgentState) -> AgentState:
             f"{len(candidates)} unique URLs / "
             f"{stats.queries_succeeded} ok / "
             f"{stats.queries_blocked} blocked / "
-            f"google_blocked_at={stats.google_blocked_at}"
+            f"google_blocked_at={stats.google_blocked_at} / "
+            f"self_stopped_at={stats.self_stopped_at}"
         ),
     )
     return state

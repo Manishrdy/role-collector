@@ -40,6 +40,9 @@ search:
 sources:
   ats_google_search:
     enabled: true
+    # Stop the channel after N successful queries instead of waiting for
+    # Google to block us. Set 0 to disable.
+    max_queries_before_self_stop: 10
     domains:
       - jobs.ashbyhq.com
       - jobs.lever.co
@@ -83,8 +86,10 @@ limits:
   max_total_pages_per_run: 100
   stop_on_captcha: true
   stop_on_login_page: true
-  min_delay_between_searches_seconds: 20
-  max_delay_between_searches_seconds: 60
+  # Tuned 2026-05-12 after Google blocked us at query #12 with 20-60s delays.
+  # Longer jitter looks less like rapid-fire automation.
+  min_delay_between_searches_seconds: 90
+  max_delay_between_searches_seconds: 240
 
 dedupe:
   duplicate_threshold: 0.92
