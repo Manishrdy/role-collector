@@ -60,6 +60,9 @@ sources:
       google_fallback: false  # off by default — nodriver session for name->website lookups
       playwright_fallback: true  # escalate per-URL on 403 / JS shells (lazy-init)
       max_companies_per_run: 20
+    watchlist:
+      max_jobs_per_company: 20  # cap board enumeration so one big board doesn't flood the queue
+      repoll_after_hours: 6.0  # skip companies polled within this window; 0 = always re-poll
   linkedin_public_search:
     enabled: true
     login_allowed: false  # MUST stay false — public search only, never authenticated

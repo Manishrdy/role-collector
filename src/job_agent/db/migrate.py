@@ -27,6 +27,8 @@ def _post_schema_migrations(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE jobs ADD COLUMN needs_review INTEGER NOT NULL DEFAULT 0"
         )
+    if not _column_exists(conn, "companies", "last_polled_at"):
+        conn.execute("ALTER TABLE companies ADD COLUMN last_polled_at TEXT")
 
 
 def migrate(db_path: str | Path | None = None) -> Path:

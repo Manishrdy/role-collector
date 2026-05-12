@@ -694,6 +694,24 @@ class CompanyResolutionRow:
     ats_url: str | None
     last_checked_at: str | None
     latest_funding_source_url: str | None = None
+    last_polled_at: str | None = None
+
+
+def bump_last_polled_at(
+    *,
+    company_id: int,
+    db_path: str | Path | None = None,
+) -> None:
+    """Record that watchlist polled this company's board just now.
+
+    Distinct from ``last_checked_at`` (resolver activity) so the watchlist
+    can age out re-polls without skipping freshly-resolved companies.
+    """
+    with connect(db_path) as conn:
+        conn.execute(
+            "UPDATE companies SET last_polled_at = ? WHERE id = ?",
+            (_utc_now_iso(), company_id),
+        )
 
 
 def update_company_resolution(
@@ -787,19 +805,32 @@ def list_unresolved_funding_companies(
 
 def list_watchlist_companies(
     *,
+    min_idle_hours: float | None = None,
     db_path: str | Path | None = None,
 ) -> list[CompanyResolutionRow]:
-    """Companies with a resolved ATS URL — these get re-polled for fresh jobs."""
+    """Companies with a resolved ATS URL — these get re-polled for fresh jobs.
+
+    When ``min_idle_hours`` is set, exclude rows whose ``last_polled_at`` is
+    within that window (so a 6h re-poll cadence skips boards already
+    polled in the last 6 hours). NULL ``last_polled_at`` (never polled)
+    always passes the filter.
+    """
+    sql = """
+        SELECT id, name, normalized_name, website_url, careers_url,
+               ats_type, ats_url, last_checked_at, last_polled_at
+        FROM companies
+        WHERE ats_url IS NOT NULL
+    """
+    params: list[Any] = []
+    if min_idle_hours is not None:
+        sql += (
+            " AND (last_polled_at IS NULL "
+            "OR last_polled_at < datetime('now', ?))"
+        )
+        params.append(f"-{min_idle_hours} hours")
+    sql += " ORDER BY last_polled_at ASC NULLS FIRST"
     with connect(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT id, name, normalized_name, website_url, careers_url,
-                   ats_type, ats_url, last_checked_at
-            FROM companies
-            WHERE ats_url IS NOT NULL
-            ORDER BY last_checked_at ASC NULLS FIRST
-            """,
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     return [
         CompanyResolutionRow(
             company_id=int(r["id"]),
@@ -810,6 +841,7 @@ def list_watchlist_companies(
             ats_type=r["ats_type"],
             ats_url=r["ats_url"],
             last_checked_at=r["last_checked_at"],
+            last_polled_at=r["last_polled_at"],
         )
         for r in rows
     ]

@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS companies (
   funding_source_url TEXT,
   first_seen_at TEXT NOT NULL,
   last_checked_at TEXT,
+  last_polled_at TEXT,
   notes TEXT
 );
 

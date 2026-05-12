@@ -56,10 +56,20 @@ class FundingResolversSection(BaseModel):
     max_companies_per_run: int = 20
 
 
+class FundingWatchlistSection(BaseModel):
+    # Caps jobs enumerated per company board so one big board can't flood
+    # the candidate queue. Set to 0 to disable.
+    max_jobs_per_company: int = 20
+    # Skip re-polling a company whose last_polled_at is within this window.
+    # 0 disables the filter (always re-poll).
+    repoll_after_hours: float = 6.0
+
+
 class FundingDiscoverySection(BaseModel):
     enabled: bool = False
     aggregators: FundingAggregatorToggles = Field(default_factory=FundingAggregatorToggles)
     resolvers: FundingResolversSection = Field(default_factory=FundingResolversSection)
+    watchlist: FundingWatchlistSection = Field(default_factory=FundingWatchlistSection)
 
 
 class LinkedInPublicSearchSection(BaseModel):

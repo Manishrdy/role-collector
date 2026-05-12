@@ -75,6 +75,46 @@ def test_list_watchlist_returns_only_resolved_with_ats(isolated_db: Path) -> Non
     assert b in ids
 
 
+def test_list_watchlist_min_idle_hours_excludes_recently_polled(
+    isolated_db: Path,
+) -> None:
+    migrate()
+    a = _seed("Acme", "https://hn.example/a")
+    assert a is not None
+    repo.update_company_resolution(
+        company_id=a,
+        website_url="https://acme.io",
+        ats_type="greenhouse",
+        ats_url="https://boards.greenhouse.io/acme",
+    )
+    # Never-polled: passes any min_idle_hours filter (NULL last_polled_at).
+    assert any(r.company_id == a for r in repo.list_watchlist_companies(min_idle_hours=6))
+    # After we bump last_polled_at, the 6h filter should exclude it.
+    repo.bump_last_polled_at(company_id=a)
+    assert not any(r.company_id == a for r in repo.list_watchlist_companies(min_idle_hours=6))
+    # A zero / very-short window still lets us re-poll.
+    assert any(
+        r.company_id == a for r in repo.list_watchlist_companies(min_idle_hours=None)
+    )
+
+
+def test_bump_last_polled_at_updates_column(isolated_db: Path) -> None:
+    migrate()
+    a = _seed("Acme", "https://hn.example/a")
+    assert a is not None
+    repo.update_company_resolution(
+        company_id=a,
+        website_url="https://acme.io",
+        ats_type="greenhouse",
+        ats_url="https://x",
+    )
+    pre = repo.list_watchlist_companies()[0]
+    assert pre.last_polled_at is None
+    repo.bump_last_polled_at(company_id=a)
+    post = repo.list_watchlist_companies()[0]
+    assert post.last_polled_at is not None
+
+
 def test_update_with_no_fields_is_noop(isolated_db: Path) -> None:
     migrate()
     company_id = _seed("Acme", "https://hn.example/a")

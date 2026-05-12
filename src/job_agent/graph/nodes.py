@@ -237,20 +237,31 @@ def run_watchlist_node(state: AgentState) -> AgentState:
     from job_agent.sources.funding.resolvers._fetch import FetchFallback
     from job_agent.sources.funding.watchlist import fetch_and_enumerate
 
-    watchlist = repo.list_watchlist_companies()
+    wl_cfg = cfg.sources.funding_discovery.watchlist
+    repoll = wl_cfg.repoll_after_hours
+    watchlist = repo.list_watchlist_companies(
+        min_idle_hours=repoll if repoll > 0 else None
+    )
     if not watchlist:
         _event(state, "watchlist", "no resolved companies to poll")
         return state
 
     use_fallback = cfg.sources.funding_discovery.resolvers.playwright_fallback
     fb: FetchFallback | None = FetchFallback() if use_fallback else None
+    max_per_company = wl_cfg.max_jobs_per_company or 100
     new_candidates: list[dict[str, Any]] = []
     by_ats: dict[str, int] = {}
     try:
         for company in watchlist:
             if not company.ats_url:
                 continue
-            urls = fetch_and_enumerate(company.ats_url, fallback=fb)
+            urls = fetch_and_enumerate(
+                company.ats_url, fallback=fb, max_jobs=max_per_company
+            )
+            try:
+                repo.bump_last_polled_at(company_id=company.company_id)
+            except Exception as e:
+                log.warning("[watchlist] bump_last_polled_at failed: %s", e)
             for url in urls:
                 new_candidates.append(
                     {
