@@ -182,6 +182,7 @@ def run_ats_api_discovery_node(state: AgentState) -> AgentState:
         shard,
         max_jobs_per_slug=cfg.sources.ats_api_discovery.max_jobs_per_slug,
         concurrency=cfg.sources.ats_api_discovery.concurrency,
+        provider_timeouts=cfg.sources.ats_api_discovery.provider_timeouts,
     )
     if slugs_per_cycle > 0 and total_slugs > slugs_per_cycle:
         repo.upsert_agent_memory(
@@ -633,6 +634,9 @@ def extract_job_data_node(state: AgentState) -> AgentState:
                     "domain": page["domain"],
                     "source_type": cand.get("source_type", "ats_google_search"),
                     "source_query": cand.get("source_query"),
+                    "posted_at_source": cand.get("posted_at_source"),
+                    "observed_at": cand.get("observed_at"),
+                    "freshness_bucket": cand.get("freshness_bucket"),
                     "needs_review": job.extraction_confidence < threshold,
                     "job": job.model_dump(),
                 }
@@ -996,6 +1000,9 @@ def save_jobs_node(state: AgentState) -> AgentState:
                     role_match_status=intel.role_match_status,
                     level=intel.level,
                     level_confidence=intel.level_confidence,
+                    posted_at_source=record.get("posted_at_source"),
+                    observed_at=record.get("observed_at"),
+                    freshness_bucket=record.get("freshness_bucket"),
                 )
             except Exception as e:
                 log.warning("upsert failed for %s: %s", record.get("url"), e)

@@ -57,8 +57,15 @@ sources:
       ashby: data/ats_slugs/ashby.txt
       lever: data/ats_slugs/lever.txt
       greenhouse: data/ats_slugs/greenhouse.txt
+      smartrecruiters: data/ats_slugs/smartrecruiters.txt
+      icims: data/ats_slugs/icims.txt
+      workday: data/ats_slugs/workday.txt
     enabled: true
     max_jobs_per_slug: 20
+    provider_timeouts:
+      workday: 20
+      smartrecruiters: 15
+      icims: 15
     seeds:
       lever:
         - spotify
@@ -91,6 +98,15 @@ sources:
         - replit
         - causal
         - posthog
+      smartrecruiters:
+        - stripe
+        - mckinseyandcompany
+      icims:
+        - nvidia
+        - servicenow
+      workday:
+        - https://wd5.myworkdaysite.com/recruiting/airbnb/Airbnb_Careers
+        - https://hiredscore.wd1.myworkdayjobs.com/External
   ats_google_search:
     enabled: true
     # Stop the channel after N successful queries instead of waiting for

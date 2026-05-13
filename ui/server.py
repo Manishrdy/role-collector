@@ -121,7 +121,8 @@ def api_overview() -> JSONResponse:
             """
             SELECT id, company_name, title, location, location_normalized_json,
                    role_family, role_match_status, level,
-                   ats_type, duplicate_status, first_seen_at, apply_url, canonical_url
+                   ats_type, duplicate_status, first_seen_at, apply_url, canonical_url,
+                   posted_at_source, observed_at, freshness_bucket
             FROM jobs
             ORDER BY id DESC
             LIMIT 10
@@ -153,6 +154,8 @@ def api_jobs(
     dup_status: str | None = None,
     ats_type: str | None = None,
     remote_type: str | None = None,
+    freshness_bucket: str | None = None,
+    fresh_24h_only: bool | None = None,
     needs_review: bool | None = None,
     page: int = 1,
     limit: int = 50,
@@ -172,6 +175,11 @@ def api_jobs(
     if remote_type:
         where.append("remote_type = ?")
         params.append(remote_type)
+    if freshness_bucket:
+        where.append("freshness_bucket = ?")
+        params.append(freshness_bucket)
+    if fresh_24h_only:
+        where.append("freshness_bucket = 'lt_24h'")
     if needs_review:
         where.append("needs_review = 1")
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
@@ -184,10 +192,20 @@ def api_jobs(
                    role_family, role_match_status, level,
                    remote_type, ats_type,
                    duplicate_status, needs_review, first_seen_at, apply_url,
+                   posted_at_source, observed_at, freshness_bucket,
                    canonical_url
             FROM jobs
             {where_sql}
-            ORDER BY first_seen_at DESC, id DESC
+            ORDER BY
+              CASE freshness_bucket
+                WHEN 'lt_24h' THEN 0
+                WHEN '24_72h' THEN 1
+                WHEN 'gt_72h' THEN 2
+                ELSE 3
+              END ASC,
+              posted_at_source DESC,
+              first_seen_at DESC,
+              id DESC
             LIMIT ? OFFSET ?
             """,
             [*params, limit, offset],
@@ -211,6 +229,13 @@ def api_jobs(
                 "SELECT DISTINCT remote_type FROM jobs WHERE remote_type IS NOT NULL ORDER BY remote_type"
             ).fetchall()
         ]
+        freshness_options = [
+            r["freshness_bucket"]
+            for r in conn.execute(
+                "SELECT DISTINCT freshness_bucket FROM jobs WHERE freshness_bucket IS NOT NULL ORDER BY freshness_bucket"
+            ).fetchall()
+            if r["freshness_bucket"] is not None
+        ]
     return JSONResponse(
         {
             "total": int(total),
@@ -221,6 +246,7 @@ def api_jobs(
                 "ats_type": ats_options,
                 "dup_status": dup_options,
                 "remote_type": remote_options,
+                "freshness_bucket": freshness_options,
             },
         }
     )

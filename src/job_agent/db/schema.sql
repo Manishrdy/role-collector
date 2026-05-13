@@ -84,6 +84,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   ats_type TEXT,
   ats_job_id TEXT,
   posted_date TEXT,
+  posted_at_source TEXT,
+  observed_at TEXT,
+  freshness_bucket TEXT,
   posted_date_confidence REAL,
   first_seen_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL,
@@ -249,6 +252,9 @@ CREATE INDEX IF NOT EXISTS idx_jobs_normalized_title
 
 CREATE INDEX IF NOT EXISTS idx_jobs_description_hash
   ON jobs(description_hash);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_freshness_bucket
+  ON jobs(freshness_bucket);
 
 CREATE INDEX IF NOT EXISTS idx_jobs_ats_job_id
   ON jobs(ats_type, ats_job_id)

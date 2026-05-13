@@ -84,6 +84,8 @@ class ATSAPIDiscoverySection(BaseModel):
     # Parallel ATS API requests. The endpoints are plain JSON and the
     # providers tolerate high concurrency; 10-20 is safe in practice.
     concurrency: int = 10
+    # Optional per-provider request timeout overrides (seconds).
+    provider_timeouts: dict[str, float] = Field(default_factory=dict)
 
 
 class FundingAggregatorToggles(BaseModel):

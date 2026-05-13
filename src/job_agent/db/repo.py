@@ -468,6 +468,9 @@ def upsert_job(
     role_match_status: str | None = None,
     level: str | None = None,
     level_confidence: float | None = None,
+    posted_at_source: str | None = None,
+    observed_at: str | None = None,
+    freshness_bucket: str | None = None,
     db_path: str | Path | None = None,
 ) -> UpsertResult:
     """Insert or update a jobs row.
@@ -518,6 +521,9 @@ def upsert_job(
                        remote_type = COALESCE(?, remote_type),
                        apply_url = COALESCE(?, apply_url),
                        posted_date = COALESCE(?, posted_date),
+                       posted_at_source = COALESCE(?, posted_at_source),
+                       observed_at = COALESCE(?, observed_at),
+                       freshness_bucket = COALESCE(?, freshness_bucket),
                        posted_date_confidence = COALESCE(?, posted_date_confidence),
                        description = COALESCE(?, description),
                        skills_json = COALESCE(?, skills_json),
@@ -554,6 +560,9 @@ def upsert_job(
                     extracted.remote_type,
                     extracted.apply_url,
                     extracted.posted_date,
+                    posted_at_source,
+                    observed_at,
+                    freshness_bucket,
                     extracted.posted_date_confidence,
                     description,
                     skills_json,
@@ -586,7 +595,8 @@ def upsert_job(
                     location, location_normalized_json, remote_type,
                     canonical_url, apply_url,
                     ats_type, ats_job_id,
-                    posted_date, posted_date_confidence,
+                    posted_date, posted_at_source, observed_at, freshness_bucket,
+                    posted_date_confidence,
                     first_seen_at, last_seen_at,
                     description, description_hash, description_embedding_json,
                     skills_json,
@@ -597,7 +607,7 @@ def upsert_job(
                     extraction_confidence, needs_review,
                     created_at, updated_at
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -614,6 +624,9 @@ def upsert_job(
                     extracted.ats_type,
                     extracted.ats_job_id,
                     extracted.posted_date,
+                    posted_at_source,
+                    observed_at,
+                    freshness_bucket,
                     extracted.posted_date_confidence,
                     now,
                     now,

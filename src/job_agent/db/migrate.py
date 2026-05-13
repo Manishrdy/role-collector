@@ -37,6 +37,15 @@ def _pre_schema_migrations(conn: sqlite3.Connection) -> None:
     """
     if _table_exists(conn, "job_sources") and not _column_exists(conn, "job_sources", "batch_id"):
         conn.execute("ALTER TABLE job_sources ADD COLUMN batch_id INTEGER")
+    # schema.sql now creates idx_jobs_freshness_bucket. On legacy DBs where
+    # jobs already exists without the new freshness columns, ensure the
+    # columns exist BEFORE executescript() attempts index creation.
+    if _table_exists(conn, "jobs") and not _column_exists(conn, "jobs", "posted_at_source"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN posted_at_source TEXT")
+    if _table_exists(conn, "jobs") and not _column_exists(conn, "jobs", "observed_at"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN observed_at TEXT")
+    if _table_exists(conn, "jobs") and not _column_exists(conn, "jobs", "freshness_bucket"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN freshness_bucket TEXT")
 
 
 def _post_schema_migrations(conn: sqlite3.Connection) -> None:
@@ -49,6 +58,12 @@ def _post_schema_migrations(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE companies ADD COLUMN last_polled_at TEXT")
     if not _column_exists(conn, "jobs", "location_normalized_json"):
         conn.execute("ALTER TABLE jobs ADD COLUMN location_normalized_json TEXT")
+    if not _column_exists(conn, "jobs", "posted_at_source"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN posted_at_source TEXT")
+    if not _column_exists(conn, "jobs", "observed_at"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN observed_at TEXT")
+    if not _column_exists(conn, "jobs", "freshness_bucket"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN freshness_bucket TEXT")
     if not _column_exists(conn, "jobs", "role_family"):
         conn.execute("ALTER TABLE jobs ADD COLUMN role_family TEXT")
     if not _column_exists(conn, "jobs", "role_match_status"):

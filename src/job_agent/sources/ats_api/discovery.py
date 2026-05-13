@@ -23,20 +23,37 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import requests
 
 from job_agent.sources.ats_api.clients import (
     enumerate_ashby,
     enumerate_greenhouse,
+    enumerate_icims,
     enumerate_lever,
+    enumerate_smartrecruiters,
+    enumerate_workday,
+)
+from job_agent.sources.ats_api.normalize import (
+    freshness_bucket,
+    normalize_employment_type,
+    normalize_iso_datetime,
+    normalize_remote_type,
 )
 
 log = logging.getLogger(__name__)
 
-Provider = Literal["lever", "greenhouse", "ashby"]
+Provider = Literal[
+    "lever",
+    "greenhouse",
+    "ashby",
+    "workday",
+    "smartrecruiters",
+    "icims",
+]
 
 
 @dataclass
@@ -53,18 +70,27 @@ _ENUMERATORS = {
     "lever": enumerate_lever,
     "greenhouse": enumerate_greenhouse,
     "ashby": enumerate_ashby,
+    "workday": enumerate_workday,
+    "smartrecruiters": enumerate_smartrecruiters,
+    "icims": enumerate_icims,
 }
 
 _HOST_BY_PROVIDER = {
     "lever": "jobs.lever.co",
     "greenhouse": "boards.greenhouse.io",
     "ashby": "jobs.ashbyhq.com",
+    "workday": "myworkdayjobs.com",
+    "smartrecruiters": "jobs.smartrecruiters.com",
+    "icims": "careers.icims.com",
 }
 
 _ATS_TYPE_BY_PROVIDER = {
     "lever": "lever",
     "greenhouse": "greenhouse",
     "ashby": "ashby",
+    "workday": "workday",
+    "smartrecruiters": "smartrecruiters",
+    "icims": "icims",
 }
 
 
@@ -95,7 +121,7 @@ def load_seeds(
     inline_seeds = inline_seeds or {}
     slug_files = slug_files or {}
     out: dict[str, list[str]] = {}
-    providers = set(inline_seeds.keys()) | set(slug_files.keys())
+    providers = sorted(set(inline_seeds.keys()) | set(slug_files.keys()))
     for provider in providers:
         merged: list[str] = []
         seen: set[str] = set()
@@ -125,9 +151,10 @@ def shard_seeds(
     persist ``next_offset`` to agent_memory so the next cycle continues
     from where this one stopped.
     """
-    flat: list[tuple[str, str]] = [
-        (provider, slug) for provider, slugs in seeds.items() for slug in slugs
-    ]
+    flat: list[tuple[str, str]] = []
+    for provider in sorted(seeds.keys()):
+        for slug in seeds[provider]:
+            flat.append((provider, slug))
     total = len(flat)
     if total == 0:
         return ({}, 0)
@@ -153,11 +180,17 @@ def _enumerate_one(
     slug: str,
     *,
     max_jobs: int,
-    session: requests.Session,
-) -> tuple[str, str, list[str] | None, Exception | None]:
+    request_timeout: float,
+    session: requests.Session | None = None,
+) -> tuple[str, str, list[dict[str, Any]] | None, Exception | None]:
     enumerator = _ENUMERATORS[provider]
     try:
-        urls = enumerator(slug, session=session, max_jobs=max_jobs)
+        urls = enumerator(
+            slug,
+            session=session,
+            request_timeout=request_timeout,
+            max_jobs=max_jobs,
+        )
         return (provider, slug, urls, None)
     except Exception as e:
         return (provider, slug, None, e)
@@ -167,8 +200,9 @@ def discover_from_seeds(
     seeds: dict[str, list[str]],
     *,
     max_jobs_per_slug: int = 20,
-    session: requests.Session | None = None,
+    session: requests.Session | None = None,  # kept for API compatibility
     concurrency: int = 10,
+    provider_timeouts: dict[str, float] | None = None,
 ) -> tuple[list[dict[str, object]], DiscoveryStats]:
     """Enumerate jobs for every (provider, slug) in ``seeds`` concurrently.
 
@@ -178,7 +212,7 @@ def discover_from_seeds(
     ``concurrency``; the public ATS APIs tolerate 10-20 in-flight requests
     in practice.
     """
-    sess = session or requests.Session()
+    provider_timeouts = provider_timeouts or {}
     stats = DiscoveryStats()
     candidates: list[dict[str, object]] = []
     seen: set[str] = set()
@@ -206,7 +240,9 @@ def discover_from_seeds(
         futures = [
             pool.submit(
                 _enumerate_one, provider, slug,
-                max_jobs=max_jobs_per_slug, session=sess,
+                max_jobs=max_jobs_per_slug,
+                request_timeout=float(provider_timeouts.get(provider, 15.0)),
+                session=session,
             )
             for provider, slug in work
         ]
@@ -225,10 +261,19 @@ def discover_from_seeds(
             stats.slugs_with_jobs += 1
             host = _HOST_BY_PROVIDER[provider]
             ats_type = _ATS_TYPE_BY_PROVIDER[provider]
-            for url in urls:
+            observed_at = datetime.now(UTC).isoformat(timespec="seconds")
+            for item in urls:
+                url = item.get("url") if isinstance(item, dict) else None
+                if not isinstance(url, str):
+                    continue
                 if url in seen:
                     continue
                 seen.add(url)
+                posted_at_source = (
+                    normalize_iso_datetime(item.get("posted_at_source"))
+                    if isinstance(item, dict)
+                    else None
+                )
                 candidates.append(
                     {
                         "url": url,
@@ -243,7 +288,23 @@ def discover_from_seeds(
                         "ats_type": ats_type,
                         "time_window": "any",
                         "role": "",
-                        "location": None,
+                        "location": item.get("location") if isinstance(item, dict) else None,
+                        "posted_at_source": posted_at_source,
+                        "observed_at": observed_at,
+                        "freshness_bucket": freshness_bucket(
+                            posted_at_source, observed_at_iso=observed_at
+                        ),
+                        "employment_type": normalize_employment_type(
+                            item.get("employment_type") if isinstance(item, dict) else None
+                        ),
+                        "remote_type": normalize_remote_type(
+                            item.get("remote_type") if isinstance(item, dict) else None
+                        ),
+                        "ats_job_id": (
+                            str(item.get("ats_job_id"))
+                            if isinstance(item, dict) and item.get("ats_job_id") is not None
+                            else None
+                        ),
                     }
                 )
                 provider_counts[provider] = provider_counts.get(provider, 0) + 1

@@ -48,6 +48,15 @@ function badge(label) {
   return `<span class="badge ${cls}">${escapeHtml(label || "—")}</span>`;
 }
 
+function freshnessBadge(bucket) {
+  const label = {
+    lt_24h: "<24h",
+    "24_72h": "24-72h",
+    gt_72h: ">72h",
+  }[bucket] || "unknown";
+  return `<span class="badge">${escapeHtml(label)}</span>`;
+}
+
 function normalizedLocation(j) {
   if (!j.location_normalized_json) return j.location || "—";
   try {
@@ -110,7 +119,17 @@ async function renderMetrics() {
 // ---------------------------------------------------------------------------
 // /api/jobs
 
-let jobsState = { page: 1, limit: 50, q: "", dup_status: "", ats_type: "", remote_type: "", needs_review: false };
+let jobsState = {
+  page: 1,
+  limit: 50,
+  q: "",
+  dup_status: "",
+  ats_type: "",
+  remote_type: "",
+  freshness_bucket: "",
+  fresh_24h_only: false,
+  needs_review: false,
+};
 
 async function renderJobs() {
   const qs = new URLSearchParams();
@@ -133,6 +152,7 @@ async function renderJobs() {
   fillSelect("#filter-dup", data.filters.dup_status || [], jobsState.dup_status);
   fillSelect("#filter-ats", data.filters.ats_type || [], jobsState.ats_type);
   fillSelect("#filter-remote", data.filters.remote_type || [], jobsState.remote_type);
+  fillSelect("#filter-freshness", data.filters.freshness_bucket || [], jobsState.freshness_bucket);
 
   // Rows
   if (!data.rows.length) {
@@ -151,7 +171,7 @@ async function renderJobs() {
           <td>${escapeHtml(j.level || "—")}</td>
           <td>${escapeHtml(j.ats_type || "—")}</td>
           <td>${badge(j.duplicate_status)}</td>
-          <td class="mono">${fmtDate(j.first_seen_at)}</td>
+          <td class="mono">${freshnessBadge(j.freshness_bucket)} ${fmtDate(j.posted_at_source || j.first_seen_at)}</td>
           <td>${applyLink(j)}</td>
         </tr>
       `
@@ -172,6 +192,8 @@ function bindJobsFilters() {
   $("#filter-dup").addEventListener("change", () => { jobsState.dup_status = $("#filter-dup").value; jobsState.page = 1; renderJobs(); });
   $("#filter-ats").addEventListener("change", () => { jobsState.ats_type = $("#filter-ats").value; jobsState.page = 1; renderJobs(); });
   $("#filter-remote").addEventListener("change", () => { jobsState.remote_type = $("#filter-remote").value; jobsState.page = 1; renderJobs(); });
+  $("#filter-freshness").addEventListener("change", () => { jobsState.freshness_bucket = $("#filter-freshness").value; jobsState.page = 1; renderJobs(); });
+  $("#fresh-24h-only").addEventListener("change", () => { jobsState.fresh_24h_only = $("#fresh-24h-only").checked; jobsState.page = 1; renderJobs(); });
   $("#needs-review").addEventListener("change", () => { jobsState.needs_review = $("#needs-review").checked; jobsState.page = 1; renderJobs(); });
   $("#prev-page").addEventListener("click", () => { if (jobsState.page > 1) { jobsState.page -= 1; renderJobs(); }});
   $("#next-page").addEventListener("click", () => { jobsState.page += 1; renderJobs(); });

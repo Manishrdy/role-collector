@@ -57,6 +57,24 @@ def _path_segments(url: str) -> list[str]:
     return [s for s in urlparse(url).path.split("/") if s]
 
 
+def _urls_only(items: list[object]) -> list[str]:
+    """Coerce ATS enumerator outputs to URL strings.
+
+    Supports both legacy ``list[str]`` and richer ``list[dict]`` records
+    emitted by ATS API discovery clients.
+    """
+    out: list[str] = []
+    for item in items:
+        if isinstance(item, str):
+            out.append(item)
+            continue
+        if isinstance(item, dict):
+            u = item.get("url")
+            if isinstance(u, str):
+                out.append(u)
+    return out
+
+
 def enumerate_board_html(
     *,
     html: str,
@@ -137,7 +155,7 @@ def fetch_and_enumerate(
             lever_slug, session=sess, request_timeout=request_timeout, max_jobs=max_jobs
         )
         if out is not None:
-            return out
+            return _urls_only(out)
         log.info("[watchlist] lever API failed; not falling back to HTML (would be 0 jobs)")
         return []
 
@@ -147,7 +165,7 @@ def fetch_and_enumerate(
             gh_slug, session=sess, request_timeout=request_timeout, max_jobs=max_jobs
         )
         if out is not None:
-            return out
+            return _urls_only(out)
         # Greenhouse HTML boards are real anchor-tag pages — falling back is useful.
         log.info("[watchlist] greenhouse API failed; falling back to HTML walk")
 

@@ -20,7 +20,10 @@ from pathlib import Path
 from job_agent.sources.ats_api.clients import (
     ashby_slug_from_url,
     greenhouse_slug_from_url,
+    icims_slug_from_url,
     lever_slug_from_url,
+    smartrecruiters_slug_from_url,
+    workday_slug_from_url,
 )
 
 log = logging.getLogger(__name__)
@@ -31,6 +34,9 @@ _EXTRACTORS = (
     ("ashby", ashby_slug_from_url),
     ("lever", lever_slug_from_url),
     ("greenhouse", greenhouse_slug_from_url),
+    ("smartrecruiters", smartrecruiters_slug_from_url),
+    ("icims", icims_slug_from_url),
+    ("workday", workday_slug_from_url),
 )
 
 

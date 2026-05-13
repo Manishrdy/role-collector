@@ -1,4 +1,4 @@
-.PHONY: setup install playwright ollama run worker review test lint format clean migrate help
+.PHONY: setup install playwright ollama run worker review test test-all lint format clean migrate help
 
 VENV ?= .venv
 PY := $(VENV)/bin/python
@@ -15,6 +15,7 @@ help:
 	@echo "  worker      - run the autonomous config-driven worker"
 	@echo "  review      - launch the FastAPI review dashboard on http://127.0.0.1:8501"
 	@echo "  test        - run pytest"
+	@echo "  test-all    - run full pytest suite with project PYTHONPATH"
 	@echo "  lint        - ruff + mypy"
 	@echo "  format      - ruff format"
 	@echo "  clean       - remove caches and venv"
@@ -55,6 +56,9 @@ review:
 
 test:
 	$(VENV)/bin/pytest
+
+test-all:
+	PYTHONPATH=src $(VENV)/bin/pytest -q
 
 lint:
 	$(VENV)/bin/ruff check src tests
