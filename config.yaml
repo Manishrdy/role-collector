@@ -42,6 +42,18 @@ sources:
   # directly for every slug below. Runs BEFORE Google search so Google
   # becomes a long-tail fallback rather than the primary source.
   ats_api_discovery:
+    # When the merged seed catalog is huge (e.g. 8000-company Ashby
+    # database), walk a shard per cycle and rotate through. 0 = walk all.
+    slugs_per_cycle: 500
+    # Parallel ATS API requests. JSON endpoints tolerate high concurrency.
+    concurrency: 15
+    # Optional per-provider slug files (one slug per line, # for comments).
+    # Combined with inline `seeds` below via union+dedup. Drop your 8000-row
+    # Ashby company list at this path:
+    slug_files:
+      ashby: data/ats_slugs/ashby.txt
+      # lever: data/ats_slugs/lever.txt
+      # greenhouse: data/ats_slugs/greenhouse.txt
     enabled: true
     max_jobs_per_slug: 20
     seeds:
@@ -81,6 +93,11 @@ sources:
     # Stop the channel after N successful queries instead of waiting for
     # Google to block us. Set 0 to disable.
     max_queries_before_self_stop: 10
+    # Run both phrase and title-only query variants per (role, domain).
+    # Doubles unique candidates per role; results dedup at the URL layer.
+    query_operators:
+      - phrase
+      - intitle
     domains:
       - jobs.ashbyhq.com
       - jobs.lever.co

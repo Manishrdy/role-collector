@@ -140,6 +140,12 @@ def run_ats_api_discovery_node(state: AgentState) -> AgentState:
     Runs BEFORE Google search so the candidate pool starts with reliable
     API-sourced URLs. Subsequent ATS Google search (if it survives the
     rate limiter) only adds long-tail companies we don't know about.
+
+    Catalog handling: inline ``seeds`` and per-provider ``slug_files`` are
+    union'd. When the merged catalog exceeds ``slugs_per_cycle``, the
+    node walks a deterministic shard per cycle and persists the next
+    offset to agent_memory under ``ats_api_shard_offset`` so subsequent
+    cycles continue past where the prior cycle stopped.
     """
     cfg = load_config()
     runtime = state.get("runtime", {}) or {}
@@ -149,21 +155,52 @@ def run_ats_api_discovery_node(state: AgentState) -> AgentState:
     if not cfg.sources.ats_api_discovery.enabled:
         _event(state, "ats_api_discovery", "disabled in config")
         return state
-    seeds = cfg.sources.ats_api_discovery.seeds
+    from job_agent.sources.ats_api.discovery import (
+        discover_from_seeds,
+        load_seeds,
+        shard_seeds,
+    )
+
+    seeds = load_seeds(
+        inline_seeds=cfg.sources.ats_api_discovery.seeds,
+        slug_files=cfg.sources.ats_api_discovery.slug_files,
+    )
     if not seeds:
         _event(state, "ats_api_discovery", "no seed slugs configured")
         return state
-    from job_agent.sources.ats_api.discovery import discover_from_seeds
+
+    total_slugs = sum(len(s) for s in seeds.values())
+    slugs_per_cycle = cfg.sources.ats_api_discovery.slugs_per_cycle
+    prev = repo.get_agent_memory(memory_key="ats_api_shard_offset", memory_scope="global")
+    prev_offset = int((prev or {}).get("offset", 0))
+    shard, next_offset = shard_seeds(
+        seeds, slugs_per_cycle=slugs_per_cycle, offset=prev_offset
+    )
+    shard_size = sum(len(s) for s in shard.values())
 
     candidates, stats = discover_from_seeds(
-        seeds, max_jobs_per_slug=cfg.sources.ats_api_discovery.max_jobs_per_slug
+        shard,
+        max_jobs_per_slug=cfg.sources.ats_api_discovery.max_jobs_per_slug,
+        concurrency=cfg.sources.ats_api_discovery.concurrency,
     )
+    if slugs_per_cycle > 0 and total_slugs > slugs_per_cycle:
+        repo.upsert_agent_memory(
+            memory_key="ats_api_shard_offset",
+            memory_scope="global",
+            value={
+                "offset": next_offset,
+                "total_slugs": total_slugs,
+                "slugs_per_cycle": slugs_per_cycle,
+                "last_shard_size": shard_size,
+            },
+        )
     existing = state.get("candidate_urls", []) or []
     state["candidate_urls"] = candidates + existing
     _event(
         state,
         "ats_api_discovery_done",
         (
+            f"shard={shard_size}/{total_slugs} offset={prev_offset}->{next_offset} "
             f"slugs_checked={stats.slugs_checked} "
             f"slugs_with_jobs={stats.slugs_with_jobs} "
             f"slugs_failed={stats.slugs_failed} "
@@ -294,15 +331,22 @@ def run_funding_resolvers_node(state: AgentState) -> AgentState:
 
 
 def run_watchlist_node(state: AgentState) -> AgentState:
-    """Enumerate ATS boards for watchlist companies; prepend to candidate_urls.
+    """Enumerate ATS boards + custom careers pages for watchlist companies.
 
-    Each resolved company (ats_url IS NOT NULL) has its board page fetched
-    and individual job posting URLs prepended to ``state["candidate_urls"]``
-    so the existing Phase-3 fetch / extract / save pipeline picks them up.
+    Two cohorts are walked:
 
-    When ``funding_discovery.resolvers.playwright_fallback`` is on, a single
-    shared FetchFallback is opened for the batch so Lever / Ashby boards
-    can be JS-rendered without paying per-company Playwright startup.
+    1. **ATS-backed** (``ats_url IS NOT NULL``): provider-specific JSON
+       APIs when available, generic anchor-tag enumeration otherwise.
+    2. **Careers-only** (``ats_url IS NULL AND careers_url IS NOT NULL``):
+       the long tail of companies with custom HTML careers pages. The
+       same generic anchor-tag enumerator walks the careers page directly;
+       extracted URLs feed into the same fetch/extract/save pipeline so
+       JSON-LD / DOM / LLM parsers get a shot at each posting.
+
+    A single shared FetchFallback is opened for the batch when
+    ``funding_discovery.resolvers.playwright_fallback`` is on so JS-rendered
+    boards or careers pages can be escalated without paying per-company
+    Playwright startup.
     """
     cfg = load_config()
     runtime = state.get("runtime", {}) or {}
@@ -316,10 +360,10 @@ def run_watchlist_node(state: AgentState) -> AgentState:
 
     wl_cfg = cfg.sources.funding_discovery.watchlist
     repoll = wl_cfg.repoll_after_hours
-    watchlist = repo.list_watchlist_companies(
-        min_idle_hours=repoll if repoll > 0 else None
-    )
-    if not watchlist:
+    idle = repoll if repoll > 0 else None
+    ats_watchlist = repo.list_watchlist_companies(min_idle_hours=idle)
+    careers_watchlist = repo.list_careers_only_companies(min_idle_hours=idle)
+    if not ats_watchlist and not careers_watchlist:
         _event(state, "watchlist", "no resolved companies to poll")
         return state
 
@@ -328,38 +372,42 @@ def run_watchlist_node(state: AgentState) -> AgentState:
     max_per_company = wl_cfg.max_jobs_per_company or 100
     new_candidates: list[dict[str, Any]] = []
     by_ats: dict[str, int] = {}
+
+    def _enumerate_company(company: Any, board_url: str, ats_type: str) -> None:
+        urls = fetch_and_enumerate(board_url, fallback=fb, max_jobs=max_per_company)
+        try:
+            repo.bump_last_polled_at(company_id=company.company_id)
+        except Exception as e:
+            log.warning("[watchlist] bump_last_polled_at failed: %s", e)
+        for url in urls:
+            new_candidates.append(
+                {
+                    "url": url,
+                    "canonical_url": url,
+                    "title": f"Careers @ {company.name}",
+                    "snippet": "",
+                    "rank": 0,
+                    "engine": "watchlist",
+                    "source_type": "watchlist",
+                    "source_query": board_url,
+                    "target_domain": "",
+                    "ats_type": ats_type,
+                    "time_window": "any",
+                    "role": "",
+                    "location": None,
+                }
+            )
+        by_ats[ats_type] = by_ats.get(ats_type, 0) + len(urls)
+
     try:
-        for company in watchlist:
+        for company in ats_watchlist:
             if not company.ats_url:
                 continue
-            urls = fetch_and_enumerate(
-                company.ats_url, fallback=fb, max_jobs=max_per_company
-            )
-            try:
-                repo.bump_last_polled_at(company_id=company.company_id)
-            except Exception as e:
-                log.warning("[watchlist] bump_last_polled_at failed: %s", e)
-            for url in urls:
-                new_candidates.append(
-                    {
-                        "url": url,
-                        "canonical_url": url,
-                        "title": f"Careers @ {company.name}",
-                        "snippet": "",
-                        "rank": 0,
-                        "engine": "watchlist",
-                        "source_type": "watchlist",
-                        "source_query": company.ats_url,
-                        "target_domain": "",
-                        "ats_type": company.ats_type or "unknown",
-                        "time_window": "any",
-                        "role": "",
-                        "location": None,
-                    }
-                )
-            by_ats[company.ats_type or "unknown"] = by_ats.get(
-                company.ats_type or "unknown", 0
-            ) + len(urls)
+            _enumerate_company(company, company.ats_url, company.ats_type or "unknown")
+        for company in careers_watchlist:
+            if not company.careers_url:
+                continue
+            _enumerate_company(company, company.careers_url, "custom_careers")
     finally:
         if fb is not None:
             fb.close()
@@ -370,7 +418,11 @@ def run_watchlist_node(state: AgentState) -> AgentState:
     _event(
         state,
         "watchlist",
-        f"companies={len(watchlist)} jobs={len(new_candidates)} by_ats={by_ats}",
+        (
+            f"ats_companies={len(ats_watchlist)} "
+            f"careers_companies={len(careers_watchlist)} "
+            f"jobs={len(new_candidates)} by_ats={by_ats}"
+        ),
     )
     return state
 

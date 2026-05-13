@@ -382,6 +382,27 @@ def upsert_agent_memory(
         return int(memory_id)
 
 
+def get_agent_memory(
+    *,
+    memory_key: str,
+    memory_scope: str,
+    db_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Fetch a previously upserted agent_memory value by (key, scope)."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT value_json FROM agent_memory WHERE memory_key = ? AND memory_scope = ? LIMIT 1",
+            (memory_key, memory_scope),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            parsed = json.loads(row["value_json"])
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+
 def _normalize(text: str) -> str:
     """Lowercase + collapse whitespace. Used for company/title dedupe keys."""
     return re.sub(r"\s+", " ", text).strip().lower()
@@ -1138,6 +1159,54 @@ def list_watchlist_companies(
                ats_type, ats_url, last_checked_at, last_polled_at
         FROM companies
         WHERE ats_url IS NOT NULL
+    """
+    params: list[Any] = []
+    if min_idle_hours is not None:
+        sql += (
+            " AND (last_polled_at IS NULL "
+            "OR last_polled_at < datetime('now', ?))"
+        )
+        params.append(f"-{min_idle_hours} hours")
+    sql += " ORDER BY last_polled_at ASC NULLS FIRST"
+    with connect(db_path) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [
+        CompanyResolutionRow(
+            company_id=int(r["id"]),
+            name=r["name"],
+            normalized_name=r["normalized_name"],
+            website_url=r["website_url"],
+            careers_url=r["careers_url"],
+            ats_type=r["ats_type"],
+            ats_url=r["ats_url"],
+            last_checked_at=r["last_checked_at"],
+            last_polled_at=r["last_polled_at"],
+        )
+        for r in rows
+    ]
+
+
+def list_careers_only_companies(
+    *,
+    min_idle_hours: float | None = None,
+    db_path: str | Path | None = None,
+) -> list[CompanyResolutionRow]:
+    """Companies whose resolver chain found a careers page but no ATS provider.
+
+    These are the long-tail companies that use custom HTML careers pages
+    (Rails / Next.js / Cornerstone / Personio without an ATS-host URL).
+    They are walked by the watchlist with the generic anchor-tag
+    enumerator instead of an ATS-specific JSON API.
+
+    When ``min_idle_hours`` is set, exclude rows whose ``last_polled_at``
+    is within that window. NULL ``last_polled_at`` (never polled) always
+    passes the filter.
+    """
+    sql = """
+        SELECT id, name, normalized_name, website_url, careers_url,
+               ats_type, ats_url, last_checked_at, last_polled_at
+        FROM companies
+        WHERE ats_url IS NULL AND careers_url IS NOT NULL
     """
     params: list[Any] = []
     if min_idle_hours is not None:

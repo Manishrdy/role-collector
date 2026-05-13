@@ -148,6 +148,52 @@ def test_small_max_queries_exercises_every_domain_once() -> None:
     assert set(targeted) == set(domains)
 
 
+def test_intitle_operator_emits_title_only_variant_without_location() -> None:
+    cfg = _make_cfg(
+        roles=["software engineer"],
+        locations=["remote"],
+        domains=["jobs.ashbyhq.com"],
+        time_windows=["past_24h"],
+    )
+    # Override default phrase-only to enable both operators.
+    cfg.sources.ats_google_search.query_operators = ["phrase", "intitle"]
+    queries = generate_ats_queries(cfg)
+    forms = [q.query for q in queries]
+    # phrase variant: locationless + per-location
+    assert 'site:jobs.ashbyhq.com "software engineer"' in forms
+    assert 'site:jobs.ashbyhq.com "software engineer" "remote"' in forms
+    # intitle variant: locationless only
+    assert 'site:jobs.ashbyhq.com intitle:"software engineer"' in forms
+    # intitle MUST NOT pair with location terms
+    assert not any('intitle:' in q and '"remote"' in q for q in forms)
+
+
+def test_intitle_tag_is_emitted() -> None:
+    cfg = _make_cfg(
+        roles=["software engineer"],
+        locations=[],
+        domains=["jobs.ashbyhq.com"],
+        time_windows=["past_24h"],
+    )
+    cfg.sources.ats_google_search.query_operators = ["intitle"]
+    queries = generate_ats_queries(cfg)
+    assert len(queries) == 1
+    assert queries[0].query == 'site:jobs.ashbyhq.com intitle:"software engineer"'
+    assert "op:intitle" in queries[0].tags
+
+
+def test_phrase_only_default_matches_legacy_behavior() -> None:
+    """Sanity: with default config (phrase only), output must not include intitle."""
+    cfg = _make_cfg(
+        roles=["software engineer"],
+        locations=[],
+        domains=["jobs.ashbyhq.com"],
+        time_windows=["past_24h"],
+    )
+    queries = generate_ats_queries(cfg)
+    assert all("intitle:" not in q.query for q in queries)
+
+
 def test_broad_queries_substitute_role_and_location() -> None:
     cfg = _make_cfg(
         roles=["software engineer"],

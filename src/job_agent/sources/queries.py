@@ -61,12 +61,24 @@ class PlannedQuery:
     tags: tuple[str, ...] = field(default_factory=tuple)
 
 
-def _build_query(domain: str, role: str, location: str | None, qualifier: str) -> str:
+def _build_phrase_query(
+    domain: str, role: str, location: str | None, qualifier: str
+) -> str:
     parts = [f"site:{domain}", f'"{role}"']
     if qualifier:
         parts.append(qualifier)
     if location:
         parts.append(f'"{location}"')
+    return " ".join(parts)
+
+
+def _build_intitle_query(domain: str, role: str, qualifier: str) -> str:
+    """Title-only variant. Location is omitted intentionally because ATS
+    job-page <title> tags don't typically include locations, so layering
+    a location term collapses the result set to ~0."""
+    parts = [f"site:{domain}", f'intitle:"{role}"']
+    if qualifier:
+        parts.append(qualifier)
     return " ".join(parts)
 
 
@@ -77,9 +89,15 @@ def generate_ats_queries(
 ) -> list[PlannedQuery]:
     """Generate Google ATS site queries from cfg.search x cfg.sources.ats_google_search.
 
-    Order: time_window -> role -> domain -> location. Locations are optional;
-    we always emit a location-less variant first to maximise coverage, then
-    one variant per configured location.
+    Two operator variants can be emitted per (role, domain, time_window):
+    a "phrase" form `site:<domain> "<role>"` (high recall, also iterates
+    over locations) and an "intitle" form `site:<domain> intitle:"<role>"`
+    (high precision, no location dimension). The two variants surface
+    different result sets and are dedup'd later at the URL layer, so
+    enabling both ~doubles unique candidates per role at no extra cost
+    beyond the Google query itself.
+
+    Order: time_window -> role -> operator -> location -> domain.
 
     `max_queries` overrides cfg.search.max_queries_per_run when provided.
     """
@@ -90,36 +108,49 @@ def generate_ats_queries(
     roles = cfg.search.roles
     locations: list[str | None] = [None, *cfg.search.locations]
     time_windows: list[TimeWindow] = [tw for tw in cfg.search.time_windows]  # type: ignore[misc]
+    operators = cfg.sources.ats_google_search.query_operators or ["phrase"]
 
     cap = max_queries if max_queries is not None else cfg.search.max_queries_per_run
     out: list[PlannedQuery] = []
 
-    # Iteration order is tw -> role -> location -> domain -> qualifier.
+    # Iteration order: tw -> role -> operator -> location -> domain -> qualifier.
     # Keeping `location` outside `domain` is intentional: a small `max_queries`
     # budget then exercises every ATS host once before cycling through
     # locations on the first host. Phase-3 smokes need this to surface
     # Greenhouse / Lever / SmartRecruiters URLs alongside Ashby.
     for tw in time_windows:
         for role in roles:
-            for location in locations:
-                for domain in domains:
-                    qualifiers = _ATS_QUALIFIERS.get(domain, [""])
-                    for qualifier in qualifiers:
-                        if len(out) >= cap:
-                            return out
-                        q = _build_query(domain, role, location, qualifier)
-                        out.append(
-                            PlannedQuery(
-                                query=q,
-                                time_window=tw,
-                                source_type="ats_google_search",
-                                target_domain=domain,
-                                ats_type=domain_to_ats_type(domain),
-                                role=role,
-                                location=location,
-                                tags=(f"ats:{domain_to_ats_type(domain)}", f"window:{tw}"),
+            for operator in operators:
+                # intitle: doesn't combine with locations (see _build_intitle_query)
+                location_iter: list[str | None] = (
+                    locations if operator == "phrase" else [None]
+                )
+                for location in location_iter:
+                    for domain in domains:
+                        qualifiers = _ATS_QUALIFIERS.get(domain, [""])
+                        for qualifier in qualifiers:
+                            if len(out) >= cap:
+                                return out
+                            if operator == "phrase":
+                                q = _build_phrase_query(domain, role, location, qualifier)
+                            else:
+                                q = _build_intitle_query(domain, role, qualifier)
+                            out.append(
+                                PlannedQuery(
+                                    query=q,
+                                    time_window=tw,
+                                    source_type="ats_google_search",
+                                    target_domain=domain,
+                                    ats_type=domain_to_ats_type(domain),
+                                    role=role,
+                                    location=location,
+                                    tags=(
+                                        f"ats:{domain_to_ats_type(domain)}",
+                                        f"window:{tw}",
+                                        f"op:{operator}",
+                                    ),
+                                )
                             )
-                        )
 
     return out
 

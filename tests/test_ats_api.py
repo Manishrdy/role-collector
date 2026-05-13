@@ -20,7 +20,11 @@ from job_agent.sources.ats_api.clients import (
     greenhouse_slug_from_url,
     lever_slug_from_url,
 )
-from job_agent.sources.ats_api.discovery import discover_from_seeds
+from job_agent.sources.ats_api.discovery import (
+    discover_from_seeds,
+    load_seeds,
+    shard_seeds,
+)
 
 
 @dataclass
@@ -255,3 +259,110 @@ def test_discover_unknown_provider_is_skipped() -> None:
     )
     # workday is skipped (unknown), lever has no slugs.
     assert stats.slugs_checked == 0
+
+
+# ---------------------------------------------------------------------------
+# seed loader + sharder
+
+
+def test_load_seeds_unions_inline_and_file(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    path = tmp_path / "ashby.txt"
+    path.write_text(
+        "\n".join(
+            [
+                "# header comment",
+                "openai",
+                "  anthropic  ",
+                "",
+                "linear",
+                "# trailing comment",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    merged = load_seeds(
+        inline_seeds={"ashby": ["openai", "stripe"]},  # openai overlaps the file
+        slug_files={"ashby": str(path)},
+    )
+    # Order preserves inline-first; duplicates collapse; blanks/comments dropped.
+    assert merged == {"ashby": ["openai", "stripe", "anthropic", "linear"]}
+
+
+def test_load_seeds_handles_missing_file(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    merged = load_seeds(
+        inline_seeds={"lever": ["spotify"]},
+        slug_files={"lever": str(tmp_path / "absent.txt")},
+    )
+    assert merged == {"lever": ["spotify"]}
+
+
+def test_load_seeds_no_inputs() -> None:
+    assert load_seeds(None, None) == {}
+
+
+def test_shard_seeds_walks_in_order_and_wraps() -> None:
+    seeds = {"ashby": ["a", "b", "c", "d", "e"]}
+    # First shard of 2 from offset 0.
+    shard1, next1 = shard_seeds(seeds, slugs_per_cycle=2, offset=0)
+    assert shard1 == {"ashby": ["a", "b"]}
+    assert next1 == 2
+    # Next shard from previous next-offset.
+    shard2, next2 = shard_seeds(seeds, slugs_per_cycle=2, offset=next1)
+    assert shard2 == {"ashby": ["c", "d"]}
+    assert next2 == 4
+    # Third shard wraps around to the start.
+    shard3, next3 = shard_seeds(seeds, slugs_per_cycle=2, offset=next2)
+    assert shard3 == {"ashby": ["e", "a"]}
+    assert next3 == 1
+
+
+def test_shard_seeds_zero_means_no_sharding() -> None:
+    seeds = {"ashby": ["a", "b", "c"]}
+    shard, next_off = shard_seeds(seeds, slugs_per_cycle=0, offset=0)
+    assert shard == seeds
+    assert next_off == 0
+
+
+def test_shard_seeds_when_window_larger_than_catalog() -> None:
+    seeds = {"ashby": ["a", "b"]}
+    shard, next_off = shard_seeds(seeds, slugs_per_cycle=10, offset=0)
+    assert shard == seeds
+    assert next_off == 0
+
+
+def test_shard_seeds_flat_order_across_providers() -> None:
+    seeds = {"lever": ["l1", "l2"], "ashby": ["a1", "a2"]}
+    shard, next_off = shard_seeds(seeds, slugs_per_cycle=3, offset=0)
+    # Order: dict-iteration order (insertion) -> lever first, then ashby.
+    assert shard == {"lever": ["l1", "l2"], "ashby": ["a1"]}
+    assert next_off == 3
+
+
+def test_shard_seeds_empty_catalog() -> None:
+    shard, next_off = shard_seeds({}, slugs_per_cycle=100, offset=42)
+    assert shard == {}
+    assert next_off == 0
+
+
+def test_discover_from_seeds_uses_concurrency() -> None:
+    """Concurrent fan-out still produces the same merged result set."""
+    sess = _FakeSession(
+        routes={
+            "https://api.ashbyhq.com/posting-api/job-board/a": _FakeResponse(
+                status_code=200, text='{"jobs":[{"id":"x1","title":"t"}]}',
+            ),
+            "https://api.ashbyhq.com/posting-api/job-board/b": _FakeResponse(
+                status_code=200, text='{"jobs":[{"id":"x2","title":"t"}]}',
+            ),
+        }
+    )
+    candidates, stats = discover_from_seeds(
+        {"ashby": ["a", "b"]}, session=sess, concurrency=5,  # type: ignore[arg-type]
+    )
+    urls = sorted(c["url"] for c in candidates)
+    assert urls == [
+        "https://jobs.ashbyhq.com/a/x1",
+        "https://jobs.ashbyhq.com/b/x2",
+    ]
+    assert stats.slugs_checked == 2
+    assert stats.slugs_with_jobs == 2

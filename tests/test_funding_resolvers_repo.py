@@ -98,6 +98,48 @@ def test_list_watchlist_min_idle_hours_excludes_recently_polled(
     )
 
 
+def test_list_careers_only_returns_no_ats_with_careers(isolated_db: Path) -> None:
+    """The careers-only cohort is the long tail: careers_url set, ats_url NULL."""
+    migrate()
+    a = _seed("Custom", "https://hn.example/a")
+    b = _seed("WithATS", "https://hn.example/b")
+    c = _seed("NoCareers", "https://hn.example/c")
+    assert a is not None and b is not None and c is not None
+    repo.update_company_resolution(
+        company_id=a,
+        website_url="https://custom.io",
+        careers_url="https://custom.io/careers",
+    )
+    repo.update_company_resolution(
+        company_id=b,
+        website_url="https://withats.io",
+        careers_url="https://withats.io/careers",
+        ats_type="greenhouse",
+        ats_url="https://boards.greenhouse.io/withats",
+    )
+    repo.update_company_resolution(company_id=c, website_url="https://nocareers.io")
+    careers_only = [r.company_id for r in repo.list_careers_only_companies()]
+    # Only the custom-careers company qualifies.
+    assert a in careers_only
+    assert b not in careers_only  # has ATS already
+    assert c not in careers_only  # no careers_url
+
+
+def test_list_careers_only_respects_min_idle_hours(isolated_db: Path) -> None:
+    migrate()
+    a = _seed("Custom", "https://hn.example/a")
+    assert a is not None
+    repo.update_company_resolution(
+        company_id=a,
+        website_url="https://custom.io",
+        careers_url="https://custom.io/careers",
+    )
+    # Never polled -> passes any min_idle_hours filter.
+    assert any(r.company_id == a for r in repo.list_careers_only_companies(min_idle_hours=6))
+    repo.bump_last_polled_at(company_id=a)
+    assert not any(r.company_id == a for r in repo.list_careers_only_companies(min_idle_hours=6))
+
+
 def test_bump_last_polled_at_updates_column(isolated_db: Path) -> None:
     migrate()
     a = _seed("Acme", "https://hn.example/a")

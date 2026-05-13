@@ -43,20 +43,47 @@ class ATSGoogleSearchSection(BaseModel):
     # 0 disables the cap. Google's threshold for `site:` queries is roughly
     # ~10-15 per session; 10 stays well under it.
     max_queries_before_self_stop: int = 10
+    # Which Google operator variants to emit per (role, domain, time_window).
+    # "phrase" -> site:<domain> "<role>"   (high recall; matches role text
+    #             anywhere on the page incl. JD body)
+    # "intitle" -> site:<domain> intitle:"<role>"   (high precision; the
+    #             role string must appear in the page <title>)
+    # Both variants are dedup'd at the URL level downstream so duplicates
+    # cost nothing; running both ~doubles unique candidates per role.
+    query_operators: list[Literal["phrase", "intitle"]] = Field(
+        default_factory=lambda: ["phrase"]  # type: ignore[arg-type]
+    )
 
 
 class ATSAPIDiscoverySection(BaseModel):
     """Seed-slug ATS API discovery — runs BEFORE Google search.
 
-    Hits each provider's public JSON board API for every slug in `seeds`.
-    Faster, more reliable, and not rate-limited by Google. Slugs are
-    curated up-front; they grow over time as the resolver/watchlist
-    chain learns new ones.
+    Hits each provider's public JSON board API for every slug in `seeds`
+    AND every slug found in `slug_files[<provider>]`. Both sources union
+    and dedupe. Faster, more reliable, and not rate-limited by Google.
+
+    For large slug catalogs (e.g. the public Ashby company database of
+    ~8000 slugs), set `slugs_per_cycle` and the worker walks the list
+    in deterministic shards across consecutive cycles, persisting
+    progress via agent_memory so resumed workers continue where they
+    left off.
     """
     enabled: bool = True
     max_jobs_per_slug: int = 20
-    # Seed slugs to enumerate, keyed by provider.
+    # Inline seeds (small curated lists). Keyed by provider.
     seeds: dict[str, list[str]] = Field(default_factory=dict)
+    # Optional path-per-provider for bulk slug lists. One slug per line;
+    # blank lines and `#`-prefixed lines are ignored. Resolved relative
+    # to the CWD or absolute. Combined with `seeds` via union.
+    slug_files: dict[str, str] = Field(default_factory=dict)
+    # Soft cap per cycle. The orchestrator walks slugs in a deterministic
+    # shard of this size; subsequent cycles continue from where the prior
+    # shard ended (offset stored in agent_memory). 0 means no sharding —
+    # the entire catalog is walked every cycle (only safe with small N).
+    slugs_per_cycle: int = 0
+    # Parallel ATS API requests. The endpoints are plain JSON and the
+    # providers tolerate high concurrency; 10-20 is safe in practice.
+    concurrency: int = 10
 
 
 class FundingAggregatorToggles(BaseModel):
