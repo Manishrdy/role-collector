@@ -524,16 +524,24 @@ def fetch_candidate_pages_node(state: AgentState) -> AgentState:
 
     urls = [c["url"] for c in candidates]
 
-    # Organic slug learning: harvest provider slugs from any Lever /
-    # Greenhouse / Ashby URLs in the candidate stream before fetching.
-    # Cheap and idempotent — new slugs feed the ATS API discovery channel
-    # on the next cycle, turning each Google discovery into a permanent
-    # JSON-API target.
+    # Organic slug learning. Two sources:
+    #
+    # 1. The candidate URL stream (Google, watchlist, broad queries) —
+    #    learns slugs the worker happens to encounter this cycle.
+    # 2. The resolved companies table (`companies.ats_url`) — learns slugs
+    #    from every company the funding-resolver chain has ever mapped
+    #    onto a known ATS provider. This is the "catch-up" path: any slug
+    #    learned at any time gets re-asserted every cycle, so a fresh
+    #    catalog file is rebuilt automatically after a wipe.
+    #
+    # New slugs feed the ATS API discovery channel on the next cycle,
+    # turning each discovery into a permanent JSON-API target.
     slug_files = cfg.sources.ats_api_discovery.slug_files or {}
     if slug_files:
         from job_agent.sources.ats_api.slug_learn import learn_slugs_from_urls
 
-        learned = learn_slugs_from_urls(urls, slug_files=slug_files)
+        learning_urls = list(urls) + repo.list_resolved_ats_urls()
+        learned = learn_slugs_from_urls(learning_urls, slug_files=slug_files)
         if learned:
             _event(
                 state,

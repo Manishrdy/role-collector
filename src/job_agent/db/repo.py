@@ -1186,6 +1186,25 @@ def list_watchlist_companies(
     ]
 
 
+def list_resolved_ats_urls(
+    *,
+    db_path: str | Path | None = None,
+) -> list[str]:
+    """Every ats_url already mapped onto a known ATS provider.
+
+    Used by the slug learner: after the funding-resolver chain has mapped
+    a company onto a Lever / Greenhouse / Ashby URL, that URL contains a
+    slug that can be harvested into the ATS API discovery catalog so the
+    next cycle mines that company's full board without going through
+    Google.
+    """
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT ats_url FROM companies WHERE ats_url IS NOT NULL"
+        ).fetchall()
+    return [r["ats_url"] for r in rows if r["ats_url"]]
+
+
 def list_careers_only_companies(
     *,
     min_idle_hours: float | None = None,

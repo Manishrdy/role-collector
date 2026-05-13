@@ -98,6 +98,32 @@ def test_list_watchlist_min_idle_hours_excludes_recently_polled(
     )
 
 
+def test_list_resolved_ats_urls_returns_only_ats_urls(isolated_db: Path) -> None:
+    """Slug learner uses this to harvest slugs from the companies table."""
+    migrate()
+    a = _seed("Acme", "https://hn.example/a")
+    b = _seed("Beta", "https://hn.example/b")
+    c = _seed("NoATS", "https://hn.example/c")
+    assert a is not None and b is not None and c is not None
+    repo.update_company_resolution(
+        company_id=a,
+        ats_type="lever",
+        ats_url="https://jobs.lever.co/acme",
+    )
+    repo.update_company_resolution(
+        company_id=b,
+        ats_type="ashby",
+        ats_url="https://jobs.ashbyhq.com/beta",
+    )
+    repo.update_company_resolution(company_id=c, website_url="https://noats.io")
+
+    urls = sorted(repo.list_resolved_ats_urls())
+    assert urls == [
+        "https://jobs.ashbyhq.com/beta",
+        "https://jobs.lever.co/acme",
+    ]
+
+
 def test_list_careers_only_returns_no_ats_with_careers(isolated_db: Path) -> None:
     """The careers-only cohort is the long tail: careers_url set, ats_url NULL."""
     migrate()
