@@ -10,7 +10,7 @@ from job_agent.config import load_config, reset_config_cache
 def test_loads_real_config_yaml() -> None:
     cfg = load_config()
     assert cfg.agent.mode in {"mvp", "beta", "prod"}
-    assert cfg.llm.model == "deepseek-r1:8b"
+    assert cfg.llm.model == "qwen3:8b"
     assert cfg.agent_loop.enabled is True
     assert 0.0 <= cfg.agent_loop.react_llm_sample_rate <= 1.0
     assert cfg.agent_loop.intelligence_llm_enabled is False

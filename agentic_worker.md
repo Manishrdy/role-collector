@@ -9,7 +9,7 @@ Refactor the project into two local microservices:
 
 This is not a user-prompted chatbot agent. The runtime objective comes from config: roles, locations, ATS API seeds, Google ATS domains, funding discovery, watchlist, and LinkedIn public search.
 
-Use **Ollama `deepseek-r1:8b`** for agent reflection/classification/normalization where useful, while keeping deterministic Python guardrails and existing source modules.
+Use **Ollama `qwen3:8b`** for agent reflection/classification/normalization where useful, while keeping deterministic Python guardrails and existing source modules.
 
 ## Phase 1: Stabilize Config, Schema, And Current Baseline
 
@@ -23,7 +23,7 @@ Use **Ollama `deepseek-r1:8b`** for agent reflection/classification/normalizatio
   - `max_google_queries_per_cycle: 10`
   - `backoff_on_block_hours: 6`
   - per-source cadence for ATS API, Google, funding, watchlist, LinkedIn.
-- Switch LLM default to `deepseek-r1:8b`, keeping Ollama as provider.
+- Switch LLM default to `qwen3:8b`, keeping Ollama as provider.
 - Preserve current `run` command as deterministic baseline.
 - Add migrations for:
   - `agent_cycles`
@@ -101,7 +101,7 @@ No tool may bypass URL safety, login/apply blocking, shortener blocking, file do
 
 ## Phase 4: LLM-Assisted Agent Intelligence
 
-Use `deepseek-r1:8b` for these bounded tasks:
+Use `qwen3:8b` for these bounded tasks:
 
 - **Source prioritization**
   - choose order per cycle from enabled sources and source stats.
@@ -268,7 +268,7 @@ Acceptance criteria:
 - jobs are saved idempotently
 - batch writes work at 5-10 job boundaries
 - dashboard is read-only and shows discovered jobs
-- DeepSeek 8B is used only through validated structured tasks
+- Qwen3 8B is used only through validated structured tasks
 - all configured targets are covered over cycles
 - SQLite remains the only jobs capture database
 
@@ -277,7 +277,7 @@ Acceptance criteria:
 - Default cycle sleep is 4 hours.
 - SQLite remains local source of truth for jobs.
 - Dashboard stays public read-only.
-- Model default becomes `deepseek-r1:8b`.
+- Model default becomes `qwen3:8b`.
 - Save broadly, then classify/filter in DB/UI.
 - No vector DB in v1.
 - Existing deterministic pipeline remains as fallback.

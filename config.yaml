@@ -8,7 +8,7 @@ agent:
 
 llm:
   provider: ollama
-  model: deepseek-r1:8b
+  model: qwen3:8b
   temperature: 0.0
   max_context_chars_per_page: 12000
   request_timeout_seconds: 90

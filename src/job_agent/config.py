@@ -20,7 +20,7 @@ class AgentSection(BaseModel):
 
 class LLMSection(BaseModel):
     provider: Literal["ollama"] = "ollama"
-    model: str = "deepseek-r1:8b"
+    model: str = "qwen3:8b"
     temperature: float = 0.0
     max_context_chars_per_page: int = 12000
     request_timeout_seconds: float = 90.0
