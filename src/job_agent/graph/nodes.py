@@ -523,6 +523,24 @@ def fetch_candidate_pages_node(state: AgentState) -> AgentState:
     candidates = deduped
 
     urls = [c["url"] for c in candidates]
+
+    # Organic slug learning: harvest provider slugs from any Lever /
+    # Greenhouse / Ashby URLs in the candidate stream before fetching.
+    # Cheap and idempotent — new slugs feed the ATS API discovery channel
+    # on the next cycle, turning each Google discovery into a permanent
+    # JSON-API target.
+    slug_files = cfg.sources.ats_api_discovery.slug_files or {}
+    if slug_files:
+        from job_agent.sources.ats_api.slug_learn import learn_slugs_from_urls
+
+        learned = learn_slugs_from_urls(urls, slug_files=slug_files)
+        if learned:
+            _event(
+                state,
+                "slug_learn",
+                ", ".join(f"{provider}={count}" for provider, count in learned.items()),
+            )
+
     _event(
         state,
         "fetch_pages",
