@@ -33,13 +33,13 @@ setup: install playwright
 	@echo ""
 	@echo "venv ready. next steps:"
 	@echo "  1. cp .env.example .env  and fill in Langfuse keys"
-	@echo "  2. make ollama   # pulls deepseek-r1:8b"
+	@echo "  2. make ollama   # pulls qwen3:8b"
 	@echo "  3. make migrate  # creates data/jobs.db"
-	@echo "  4. make run"
+	@echo "  4. make worker   # starts the autonomous worker"
 
 ollama:
 	@command -v ollama >/dev/null 2>&1 || { echo "ollama not found. install from https://ollama.com"; exit 1; }
-	ollama pull deepseek-r1:8b
+	ollama pull qwen3:8b
 
 migrate:
 	$(PY) -m job_agent.db.migrate
